@@ -27,34 +27,40 @@ INITIAL_VOCAB = [
     {"English": "think", "Group": "動詞", "Chinese_1": "思考", "Chinese_2": "想", "Example": "I need to think about it.", "Course": "Cherie思考課", "Date": "2025-11-16", "Correct": 0, "Total": 0},
 ]
 
-# --- 1. Firestore 初始化 ---
-def init_firestore():
+# --- 1. Firestore 初始化 (使用快取避免重複連線) ---
+@st.cache_resource
+def get_db():
     try:
         creds_info = st.secrets["firebase_credentials"]
         creds = service_account.Credentials.from_service_account_info(creds_info)
-        db = firestore.Client(credentials=creds)
-        return db
+        return firestore.Client(credentials=creds)
     except Exception as e:
+        st.error(f"資料庫連線失敗: {e}")
         return None
 
-db = init_firestore()
+db = get_db()
 APP_ID = st.secrets.get("APP_ID", "flashcard-pro-v1")
-
-# 路徑規範
 USER_LIST_PATH = f"artifacts/{APP_ID}/public/data/users"
 
-# --- 2. 工具函式 (Security & Hash) ---
+# --- 2. 工具函式 ---
 
 def hash_password(password):
-    """將密碼轉換為 SHA-256 雜湊值"""
     return hashlib.sha256(password.encode()).hexdigest()
 
-def init_users_in_db():
-    """初始化學生名單到 Firestore (若不存在)"""
-    if not db: return
+@st.cache_data(ttl=600) # 快取 10 分鐘，減少讀取次數
+def fetch_users_list():
+    if not db: return {}
     docs = db.collection(USER_LIST_PATH).stream()
-    if not any(docs):
-        # 預設三個學生，初始密碼皆為 1234
+    return {d.id: d.to_dict() for d in docs}
+
+def init_users_in_db():
+    """僅在必要時初始化使用者，避免每次 rerun 都檢查"""
+    if not db: return
+    # 使用快取檢查是否已經初始化過
+    if st.session_state.get("users_initialized"): return
+    
+    docs = db.collection(USER_LIST_PATH).limit(1).get()
+    if not docs:
         default_pwd = hash_password("1234")
         users = [
             {"name": "Esme", "id": "S001", "password": default_pwd, "color": "#FF69B4"},
@@ -63,31 +69,26 @@ def init_users_in_db():
         ]
         for u in users:
             db.collection(USER_LIST_PATH).document(u["name"]).set(u)
-
-def fetch_users_list():
-    """從 Firestore 獲取所有學生資訊"""
-    if not db: return {}
-    docs = db.collection(USER_LIST_PATH).stream()
-    return {d.id: d.to_dict() for d in docs}
+    st.session_state.users_initialized = True
 
 # --- 3. Session State 初始化 ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_info" not in st.session_state:
     st.session_state.user_info = None
+if "u_vocab" not in st.session_state:
+    st.session_state.u_vocab = [] # 將單字庫存在 Session 中，避免重複讀取
 if "practice_idx" not in st.session_state:
     st.session_state.practice_idx = 0
 if "practice_reveal" not in st.session_state:
     st.session_state.practice_reveal = False
-if "pending_items" not in st.session_state:
-    st.session_state.pending_items = None
-if "initialized_users" not in st.session_state:
-    st.session_state.initialized_users = set()
+if "quiz_history" not in st.session_state:
+    st.session_state.quiz_history = []
 
-# 啟動時初始化使用者名單
+# 初始化執行一次
 init_users_in_db()
 
-# --- 4. 資料庫操作函式 (Vocabulary) ---
+# --- 4. 資料庫操作函式 (優化讀取邏輯) ---
 
 def get_vocab_path():
     if st.session_state.logged_in and st.session_state.user_info:
@@ -95,9 +96,11 @@ def get_vocab_path():
         return f"artifacts/{APP_ID}/users/{uid}/vocabulary"
     return None
 
-def load_vocab_from_db():
+def sync_vocab_from_db():
+    """強迫從雲端重新同步單字庫到記憶體"""
     path = get_vocab_path()
-    if not db or not path: return []
+    if not db or not path: return
+    
     docs = db.collection(path).stream()
     data = []
     for d in docs:
@@ -105,33 +108,24 @@ def load_vocab_from_db():
         item['id'] = d.id
         data.append(item)
     
-    uid = st.session_state.user_info["id"]
-    if not data and uid not in st.session_state.initialized_users:
+    if not data:
+        # 初始化雲端預設單字
         for item in INITIAL_VOCAB:
             db.collection(path).add(item)
-        st.session_state.initialized_users.add(uid)
-        return load_vocab_from_db()
-    return data
+        return sync_vocab_from_db() # 遞迴讀取一次帶有 ID 的資料
+        
+    st.session_state.u_vocab = data
 
-def update_db_word(doc_id, update_dict):
+def update_word_data(doc_id, update_dict):
+    """更新單字並同步本地狀態"""
     path = get_vocab_path()
     if db and path and doc_id:
         db.collection(path).document(doc_id).update(update_dict)
-
-def save_new_words_to_db(items):
-    path = get_vocab_path()
-    if db and path:
-        for it in items:
-            data = {k: v for k, v in it.items() if k != 'id'}
-            db.collection(path).add(data)
-
-def delete_words_from_db(doc_ids):
-    path = get_vocab_path()
-    if db and path:
-        for doc_id in doc_ids:
-            db.collection(path).document(doc_id).delete()
-        uid = st.session_state.user_info["id"]
-        st.session_state.initialized_users.add(uid)
+        # 同步更新本地 Session 狀態，避免重新讀取整份資料庫
+        for item in st.session_state.u_vocab:
+            if item.get('id') == doc_id:
+                item.update(update_dict)
+                break
 
 # --- 5. AI 與 JS 工具 ---
 
@@ -154,7 +148,7 @@ Requirements:
 Input words:
 {words_text}
     """
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "text/plain"}}
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, timeout=30)
         if res.status_code == 200:
@@ -164,7 +158,11 @@ Input words:
                 if '|' in line:
                     p = [i.strip() for i in line.split('|')]
                     if len(p) >= 5:
-                        raw_items.append({"English": p[0], "Group": p[1], "Chinese_1": p[2], "Chinese_2": p[3], "Example": p[4], "Course": course_name, "Date": str(course_date), "Correct": 0, "Total": 0})
+                        raw_items.append({
+                            "English": p[0], "Group": p[1], "Chinese_1": p[2], "Chinese_2": p[3], 
+                            "Example": p[4], "Course": course_name, "Date": str(course_date), 
+                            "Correct": 0, "Total": 0
+                        })
             return raw_items
     except: pass
     return []
@@ -197,8 +195,6 @@ def auto_focus_input():
 
 with st.sidebar:
     st.title("🧠 Flashcard Pro")
-    
-    # 獲取動態學生名單
     users_db = fetch_users_list()
     
     if not st.session_state.logged_in:
@@ -212,14 +208,12 @@ with st.sidebar:
                 if hash_password(input_password) == user_record["password"]:
                     st.session_state.logged_in = True
                     st.session_state.user_info = user_record
-                    st.success(f"登入成功，歡迎 {selected_name}！")
+                    # 登入時才讀取一次資料庫
+                    sync_vocab_from_db()
+                    st.success("登入成功！")
                     st.rerun()
                 else:
-                    st.error("密碼不正確，請再試一次。")
-            else:
-                st.warning("請選擇使用者並輸入密碼。")
-        
-        st.info("💡 預設密碼均為 1234")
+                    st.error("密碼錯誤。")
     else:
         user = st.session_state.user_info
         st.markdown(f"### 👤 {user['name']}")
@@ -229,29 +223,31 @@ with st.sidebar:
         if st.button("登出", use_container_width=True):
             st.session_state.logged_in = False
             st.session_state.user_info = None
+            st.session_state.u_vocab = []
             st.rerun()
 
 if not st.session_state.logged_in:
     st.title("🚀 歡迎使用 Flashcard Pro")
-    st.info("本系統已連線至 Firestore 資料庫。請在側邊欄登入以同步您的個人進度與字庫。")
+    st.info("請登入以開始練習。預設密碼 1234。")
 else:
-    u_vocab = load_vocab_from_db()
+    # 直接讀取記憶體中的單字，不再呼叫資料庫
+    u_vocab = st.session_state.u_vocab
 
     if menu == "學習儀表板":
         st.title("📊 學習儀表板")
         if not u_vocab:
-            st.info("目前尚無單字資料。")
+            st.info("目前尚無資料，請點擊下方按鈕同步或新增單字。")
+            if st.button("🔄 立即同步雲端資料"):
+                sync_vocab_from_db(); st.rerun()
         else:
             col1, col2, col3 = st.columns(3)
             col1.metric("總單字數", len(u_vocab))
             col2.metric("測驗次數", sum(v.get('Total', 0) for v in u_vocab))
-            t_c = sum(v.get('Correct', 0) for v in u_vocab)
             t_q = sum(v.get('Total', 0) for v in u_vocab)
-            acc = (t_c / t_q * 100) if t_q > 0 else 0
+            acc = (sum(v.get('Correct', 0) for v in u_vocab) / t_q * 100) if t_q > 0 else 0
             col3.metric("正確率", f"{acc:.1f}%")
             st.divider()
-            df = pd.DataFrame(u_vocab)
-            st.dataframe(df[['English', 'Chinese_1', 'Course', 'Date', 'Correct', 'Total']], use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(u_vocab)[['English', 'Chinese_1', 'Course', 'Date', 'Correct', 'Total']], use_container_width=True, hide_index=True)
 
     elif menu == "單字管理":
         st.title("⚙️ 單字管理")
@@ -259,28 +255,31 @@ else:
         with tab1:
             c_name = st.text_input("課程名稱:", value="新課程")
             c_date = st.date_input("日期:", value=date.today())
-            text_area = st.text_area("輸入內容 (AI 自動解析修正):", height=150)
+            text_area = st.text_area("輸入單字內容:", height=150)
             if st.button("啟動 AI 處理"):
-                if text_area:
-                    with st.spinner("解析中..."):
-                        st.session_state.pending_items = call_gemini_to_complete(text_area, c_name, c_date)
-            if st.session_state.pending_items:
-                st.divider()
-                st.subheader("📝 預覽解析結果")
-                edited = st.data_editor(pd.DataFrame(st.session_state.pending_items), column_order=["English", "Group", "Chinese_1", "Chinese_2", "Example"], use_container_width=True, hide_index=True)
+                with st.spinner("AI 解析中..."):
+                    st.session_state.pending_items = call_gemini_to_complete(text_area, c_name, c_date)
+            
+            if st.session_state.get("pending_items"):
+                st.subheader("📝 預覽結果")
+                edited = st.data_editor(pd.DataFrame(st.session_state.pending_items), use_container_width=True, hide_index=True)
                 if st.button("💾 確認儲存至雲端", type="primary"):
-                    save_new_words_to_db(edited.to_dict('records'))
+                    path = get_vocab_path()
+                    for it in edited.to_dict('records'):
+                        db.collection(path).add(it)
                     st.session_state.pending_items = None
+                    sync_vocab_from_db() # 儲存後才重新讀取
                     st.success("儲存成功！"); st.rerun()
 
         with tab2:
-            st.subheader("📝 修改現有單字")
+            st.subheader("📝 修改單字")
             if u_vocab:
                 edited_df = st.data_editor(pd.DataFrame(u_vocab), column_order=["English", "Group", "Chinese_1", "Chinese_2", "Example"], use_container_width=True, hide_index=True)
-                if st.button("儲存修改"):
-                    for _, row in edited_df.iterrows():
-                        update_db_word(row.get('id'), {k: v for k, v in row.to_dict().items() if k != 'id'})
-                    st.success("雲端已同步！"); st.rerun()
+                if st.button("💾 儲存所有修改"):
+                    with st.spinner("同步至雲端..."):
+                        for _, row in edited_df.iterrows():
+                            update_word_data(row.get('id'), {k: v for k, v in row.to_dict().items() if k != 'id'})
+                    st.success("更新完成！"); st.rerun()
 
         with tab3:
             st.subheader("🗑️ 刪除單字")
@@ -289,15 +288,16 @@ else:
                 res = st.data_editor(df_del[['選取', 'id', 'English', 'Chinese_1', 'Course']], column_config={"id": None}, use_container_width=True, hide_index=True)
                 to_delete = res[res["選取"] == True]["id"].tolist()
                 if st.button(f"確認刪除 ({len(to_delete)} 個)", type="primary"):
-                    if to_delete:
-                        delete_words_from_db(to_delete)
-                        st.success("已移除！"); st.rerun()
+                    path = get_vocab_path()
+                    for doc_id in to_delete:
+                        db.collection(path).document(doc_id).delete()
+                    sync_vocab_from_db(); st.rerun()
 
     elif menu == "單字練習":
         st.title("✏️ 單字練習")
         tab_p, tab_t = st.tabs(["快閃練習", "實力測驗"])
         with tab_p:
-            if not u_vocab: st.info("請新增單字。")
+            if not u_vocab: st.info("無單字資料。")
             else:
                 if st.session_state.practice_idx >= len(u_vocab): st.session_state.practice_idx = 0
                 target = u_vocab[st.session_state.practice_idx]
@@ -317,27 +317,36 @@ else:
                         st.session_state.practice_idx = (st.session_state.practice_idx+1)%len(u_vocab)
                         st.session_state.practice_reveal=False; st.rerun()
                 keyboard_bridge()
+
         with tab_t:
-            if st.session_state.get("show_test_toast"):
-                st.toast("✅ 正確！"); st.session_state.show_test_toast = False
-            if not u_vocab: st.info("請新增單字。")
+            if not u_vocab: st.info("無單字資料。")
             else:
-                if "test_pool" not in st.session_state or st.button("換一批"):
+                if "test_pool" not in st.session_state or st.button("換一批題目"):
                     st.session_state.test_pool = random.sample(u_vocab, min(10, len(u_vocab)))
-                    st.session_state.t_idx = 0; st.session_state.t_score = 0; st.rerun()
+                    st.session_state.t_idx = 0; st.session_state.t_score = 0; st.session_state.quiz_history = []
+                    st.rerun()
+                
                 if st.session_state.t_idx < len(st.session_state.test_pool):
                     curr = st.session_state.test_pool[st.session_state.t_idx]
-                    with st.form(key=f"q_{st.session_state.t_idx}", border=True):
+                    st.write(f"進度：{st.session_state.t_idx + 1} / {len(st.session_state.test_pool)}")
+                    with st.form(key=f"q_f_{st.session_state.t_idx}", border=True):
                         st.header(curr['English'])
                         ans = st.text_input("輸入中文：")
                         if st.form_submit_button("提交", use_container_width=True):
                             ok = ans and (ans in str(curr['Chinese_1']) or str(curr['Chinese_1']) in ans)
-                            if ok: st.session_state.t_score += 1; st.session_state.show_test_toast = True
-                            update_db_word(curr.get('id'), {"Correct": int(curr.get('Correct', 0)) + (1 if ok else 0), "Total": int(curr.get('Total', 0)) + 1})
+                            st.session_state.quiz_history.append({"英文": curr['English'], "你的輸入": ans, "正確答案": curr['Chinese_1'], "is_correct": ok})
+                            if ok: st.session_state.t_score += 1
+                            # 立即更新雲端並同步本地狀態，確保 Correct 次數正確
+                            update_word_data(curr.get('id'), {"Correct": int(curr.get('Correct', 0)) + (1 if ok else 0), "Total": int(curr.get('Total', 0)) + 1})
                             st.session_state.t_idx += 1; st.rerun()
                     auto_focus_input()
                 else:
-                    st.success(f"測驗結束！得分：{st.session_state.t_score} / {len(st.session_state.test_pool)}")
+                    st.success(f"測驗得分：{st.session_state.t_score} / {len(st.session_state.test_pool)}")
+                    df_h = pd.DataFrame(st.session_state.quiz_history)
+                    wrongs = df_h[df_h["is_correct"] == False]
+                    if not wrongs.empty:
+                        st.subheader("❌ 錯誤回顧")
+                        st.table(wrongs[["英文", "你的輸入", "正確答案"]])
 
 st.divider()
-st.caption("Flashcard Pro - 資料已加密並同步至 Firestore")
+st.caption("Flashcard Pro - 已優化讀取效能 (Memory Caching Mode)")
