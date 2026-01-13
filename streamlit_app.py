@@ -251,22 +251,42 @@ def auto_focus_input():
     html(js, height=0)
 
 def text_to_speech(text):
+    """
+    產生語音播放的 HTML 元件。
+    包含一個自動觸發的 Script (針對 PC/Android)
+    和一個實體按鈕 (針對 iOS)
+    """
     if not text: return
     safe_text = text.replace('"', '\\"').replace('\n', ' ')
-    js = f"""
+    
+    js_code = f"""
     <script>
-    if (window.parent.speechSynthesis) {{
-        window.parent.speechSynthesis.cancel();
-        const msg = new SpeechSynthesisUtterance("{safe_text}");
-        msg.lang = 'en-US';
-        msg.rate = 0.9;
-        window.parent.speechSynthesis.speak(msg);
-    }}
+        function playSound() {{
+            var synthesis = window.parent.speechSynthesis || window.speechSynthesis;
+            if (synthesis) {{
+                synthesis.cancel();
+                var msg = new SpeechSynthesisUtterance("{safe_text}");
+                msg.lang = 'en-US';
+                msg.rate = 0.9;
+                synthesis.speak(msg);
+            }}
+        }}
+        setTimeout(playSound, 300);
     </script>
+    <style>
+        .audio-btn {{
+            background-color: transparent; border: 1px solid #ddd; border-radius: 5px;
+            padding: 4px 8px; font-size: 12px; cursor: pointer; color: #666;
+            display: flex; align-items: center; gap: 4px; margin: 5px auto;
+        }}
+        .audio-btn:hover {{ background-color: #f0f0f0; color: #333; }}
+    </style>
+    <div style="display: flex; justify-content: center; width: 100%;">
+        <button class="audio-btn" onclick="playSound()">🔊 播放發音</button>
+    </div>
     """
-    html(js, height=0)
+    html(js_code, height=40)
 
-# --- 6. 登入邏輯 (Callback) ---
 def attempt_login():
     """處理登入的 Callback 函式"""
     selected_name = st.session_state.login_user_name
@@ -480,13 +500,15 @@ else:
                 if st.session_state.practice_idx >= len(current_set): st.session_state.practice_idx = 0
                 target = current_set[st.session_state.practice_idx]
                 
-                if st.session_state.audio_to_play:
-                    text_to_speech(st.session_state.audio_to_play)
-                    st.session_state.audio_to_play = None
-
                 with st.container(border=True):
                     st.caption(f"{target.get('Course')} | {st.session_state.practice_idx + 1}/{len(current_set)}")
                     st.header(target['English'])
+                    
+                    if not st.session_state.practice_reveal:
+                        text_to_speech(target['English'])
+                    if st.session_state.practice_reveal:
+                        text_to_speech(target.get('Example', ''))
+                    
                     if st.session_state.practice_reveal:
                         st.divider()
                         st.markdown(f"**中文：** {target['Chinese_1']} ({target.get('POS')})")
