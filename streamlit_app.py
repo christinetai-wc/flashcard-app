@@ -19,13 +19,13 @@ GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025"
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
-# 預設單字內容
+# 預設單字內容 (修改 Group -> POS)
 INITIAL_VOCAB = [
-    {"English": "plus", "Group": "介系詞", "Chinese_1": "加", "Chinese_2": "加上", "Example": "Two plus two is four.", "Course": "Sophie數學課", "Date": "2025-11-15", "Correct": 0, "Total": 0},
-    {"English": "minus", "Group": "介系詞", "Chinese_1": "減", "Chinese_2": "減去", "Example": "Five minus two is three.", "Course": "Sophie數學課", "Date": "2025-11-15", "Correct": 0, "Total": 0},
-    {"English": "multiply", "Group": "動詞", "Chinese_1": "乘", "Chinese_2": "繁殖", "Example": "Multiply 3 by 4.", "Course": "Sophie數學課", "Date": "2025-12-31", "Correct": 0, "Total": 0},
-    {"English": "divide", "Group": "動詞", "Chinese_1": "除", "Chinese_2": "分開", "Example": "Divide 10 by 2.", "Course": "Sophie數學課", "Date": "2026-01-10", "Correct": 0, "Total": 0},
-    {"English": "think", "Group": "動詞", "Chinese_1": "思考", "Chinese_2": "想", "Example": "I need to think about it.", "Course": "Cherie思考課", "Date": "2025-11-16", "Correct": 0, "Total": 0},
+    {"English": "plus", "POS": "介系詞", "Chinese_1": "加", "Chinese_2": "加上", "Example": "Two plus two is four.", "Course": "Sophie數學課", "Date": "2025-11-15", "Correct": 0, "Total": 0},
+    {"English": "minus", "POS": "介系詞", "Chinese_1": "減", "Chinese_2": "減去", "Example": "Five minus two is three.", "Course": "Sophie數學課", "Date": "2025-11-15", "Correct": 0, "Total": 0},
+    {"English": "multiply", "POS": "動詞", "Chinese_1": "乘", "Chinese_2": "繁殖", "Example": "Multiply 3 by 4.", "Course": "Sophie數學課", "Date": "2025-12-31", "Correct": 0, "Total": 0},
+    {"English": "divide", "POS": "動詞", "Chinese_1": "除", "Chinese_2": "分開", "Example": "Divide 10 by 2.", "Course": "Sophie數學課", "Date": "2026-01-10", "Correct": 0, "Total": 0},
+    {"English": "think", "POS": "動詞", "Chinese_1": "思考", "Chinese_2": "想", "Example": "I need to think about it.", "Course": "Cherie思考課", "Date": "2025-11-16", "Correct": 0, "Total": 0},
 ]
 
 # --- 1. Firestore 初始化 ---
@@ -94,7 +94,7 @@ def get_vocab_path():
         return f"artifacts/{APP_ID}/users/{uid}/vocabulary"
     return None
 
-def sync_vocab_from_db():
+def sync_vocab_from_db(init_if_empty=False):
     path = get_vocab_path()
     if not db or not path: return
     docs = db.collection(path).stream()
@@ -103,10 +103,13 @@ def sync_vocab_from_db():
         item = d.to_dict()
         item['id'] = d.id
         data.append(item)
-    if not data:
+    
+    if not data and init_if_empty:
         for item in INITIAL_VOCAB:
             db.collection(path).add(item)
-        return sync_vocab_from_db()
+        time.sleep(1)
+        return sync_vocab_from_db(init_if_empty=False)
+        
     st.session_state.u_vocab = data
 
 def update_word_data(doc_id, update_dict):
@@ -121,9 +124,18 @@ def update_word_data(doc_id, update_dict):
 def save_new_words_to_db(items):
     path = get_vocab_path()
     if db and path:
+        batch = db.batch()
+        count = 0
         for it in items:
-            data = {k: v for k, v in it.items() if k != 'id'}
-            db.collection(path).add(data)
+            doc_ref = db.collection(path).document()
+            batch.set(doc_ref, it)
+            count += 1
+            if count >= 400:
+                batch.commit()
+                batch = db.batch()
+                count = 0
+        if count > 0:
+            batch.commit()
 
 def delete_words_from_db(doc_ids):
     path = get_vocab_path()
@@ -138,7 +150,9 @@ def call_gemini_to_complete(words_text, course_name, course_date):
     
     # --- 修改點：讀取外部 MD 檔案 ---
     prompt_file = "system_prompt.md"
-    if os.path.exists(prompt_file):
+    if st.secrets.get("system_prompt"):
+        base_prompt = st.secrets["system_prompt"]
+    elif os.path.exists(prompt_file):
         with open(prompt_file, "r", encoding="utf-8") as f:
             base_prompt = f.read()
     else:
@@ -170,7 +184,7 @@ Requirements:
                     p = [i.strip() for i in line.split('|')]
                     if len(p) >= 5:
                         raw_items.append({
-                            "English": p[0], "Group": p[1], "Chinese_1": p[2], "Chinese_2": p[3], 
+                            "English": p[0], "POS": p[1], "Chinese_1": p[2], "Chinese_2": p[3], 
                             "Example": p[4], "Course": course_name, "Date": str(course_date), 
                             "Correct": 0, "Total": 0
                         })
@@ -265,7 +279,7 @@ def attempt_login():
             st.session_state.logged_in = True
             st.session_state.user_info = user_record
             st.session_state.login_error = None
-            sync_vocab_from_db()
+            sync_vocab_from_db(init_if_empty=True)
         else:
             st.session_state.login_error = "密碼錯誤。"
     else:
@@ -322,8 +336,7 @@ else:
         st.title("📊 學習儀表板")
         if not u_vocab:
             st.info("目前尚無資料。")
-            if st.button("🔄 同步雲端"):
-                sync_vocab_from_db(); st.rerun()
+            if st.button("🔄 同步雲端"): sync_vocab_from_db(); st.rerun()
         else:
             options = get_course_options(u_vocab)
             selection = st.selectbox("篩選檢視範圍：", options, key="dash_filter")
@@ -339,11 +352,12 @@ else:
             
             st.divider()
             df = pd.DataFrame(filtered_vocab)
-            st.dataframe(df[['English', 'Chinese_1', 'Course', 'Date', 'Correct', 'Total']], use_container_width=True, hide_index=True)
+            st.dataframe(df[['English', 'Chinese_1', 'POS', 'Course', 'Date', 'Correct', 'Total']], use_container_width=True, hide_index=True)
 
     elif menu == "單字管理":
         st.title("⚙️ 單字管理")
-        tab1, tab2, tab3 = st.tabs(["批次輸入", "手動修改", "單字刪除"])
+        tab1, tab2, tab3, tab4 = st.tabs(["批次輸入", "手動修改", "單字刪除", "📂 CSV 匯入"])
+        
         with tab1:
             c_name = st.text_input("課程名稱:", value="新課程")
             c_date = st.date_input("日期:", value=date.today())
@@ -396,11 +410,61 @@ else:
                     
                     to_delete = res[res["選取"] == True]["id"].tolist()
                     if st.button(f"確認刪除 ({len(to_delete)} 個)", type="primary"):
-                        path = get_vocab_path()
-                        for doc_id in to_delete: db.collection(path).document(doc_id).delete()
-                        sync_vocab_from_db(); st.rerun()
-                else: st.warning("選取範圍內無單字。")
-            else: st.info("無單字資料。")
+                        delete_words_from_db(to_delete)
+                        sync_vocab_from_db(); st.success("已刪除！"); st.rerun()
+                else: st.warning("無資料。")
+            else: st.info("無資料。")
+
+        with tab4:
+            st.subheader("📂 從 CSV 檔案匯入")
+            uploaded_file = st.file_uploader("選擇 CSV 檔案", type=["csv"])
+            col_a, col_b = st.columns(2)
+            default_course = col_a.text_input("預設課程名稱", "匯入單字")
+            default_date = col_b.date_input("預設日期", value=date.today())
+            
+            if uploaded_file is not None:
+                try:
+                    df_csv = pd.read_csv(uploaded_file)
+                    st.write(f"預覽上傳內容 (共 {len(df_csv)} 筆)：")
+                    st.dataframe(df_csv)
+                    
+                    if "English" in df_csv.columns and "Chinese_1" in df_csv.columns:
+                        if st.button("🚀 開始匯入資料庫", type="primary"):
+                            with st.spinner("正在匯入..."):
+                                df_csv = df_csv.fillna("")
+                                items_to_add = []
+                                for _, row in df_csv.iterrows():
+                                    # CSV 匯入也改為讀取 POS
+                                    pos_val = str(row.get("POS", str(row.get("Group", "")))).strip()
+                                    if not pos_val: pos_val = "未分類"
+                                    
+                                    course_val = str(row.get("Course", "")).strip()
+                                    if not course_val: course_val = default_course
+                                    
+                                    date_val = str(row.get("Date", "")).strip()
+                                    if not date_val: date_val = str(default_date)
+
+                                    item = {
+                                        "English": str(row.get("English", "")),
+                                        "Chinese_1": str(row.get("Chinese_1", "")),
+                                        "Chinese_2": str(row.get("Chinese_2", "")),
+                                        "POS": pos_val,
+                                        "Example": str(row.get("Example", "")),
+                                        "Course": course_val,
+                                        "Date": date_val,
+                                        "Correct": int(row.get("Correct", 0)) if str(row.get("Correct", "0")).isdigit() else 0,
+                                        "Total": int(row.get("Total", 0)) if str(row.get("Total", "0")).isdigit() else 0
+                                    }
+                                    items_to_add.append(item)
+                                save_new_words_to_db(items_to_add)
+                                sync_vocab_from_db()
+                                st.success(f"成功匯入 {len(items_to_add)} 筆單字！")
+                                time.sleep(1)
+                                st.rerun()
+                    else:
+                        st.error("CSV 格式錯誤：必須包含 'English' 與 'Chinese_1' 欄位。")
+                except Exception as e:
+                    st.error(f"讀取檔案失敗: {e}")
 
     elif menu == "單字練習":
         st.title("✏️ 單字練習")
@@ -425,7 +489,7 @@ else:
                     st.header(target['English'])
                     if st.session_state.practice_reveal:
                         st.divider()
-                        st.markdown(f"**中文：** {target['Chinese_1']}")
+                        st.markdown(f"**中文：** {target['Chinese_1']} ({target.get('POS')})")
                         st.info(f"例句：{target.get('Example', '')}")
                     st.write("")
                     c1, c2, c3 = st.columns(3)
