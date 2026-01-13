@@ -6,10 +6,18 @@ import requests
 import time
 import hashlib
 import os
+import base64
+import string
 from datetime import date
 from google.cloud import firestore
 from google.oauth2 import service_account
 from streamlit.components.v1 import html
+
+# --- 新增：嘗試匯入 SpeechRecognition ---
+try:
+    import speech_recognition as sr
+except ImportError:
+    sr = None
 
 # --- 0. 設定與常數 ---
 st.set_page_config(page_title="Flashcard Pro 雲端版", page_icon="🧠", layout="wide")
@@ -19,13 +27,19 @@ GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025"
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
-# 預設單字內容 (修改 Group -> POS)
+# 預設單字內容 (Fallback)
 INITIAL_VOCAB = [
     {"English": "plus", "POS": "介系詞", "Chinese_1": "加", "Chinese_2": "加上", "Example": "Two plus two is four.", "Course": "Sophie數學課", "Date": "2025-11-15", "Correct": 0, "Total": 0},
     {"English": "minus", "POS": "介系詞", "Chinese_1": "減", "Chinese_2": "減去", "Example": "Five minus two is three.", "Course": "Sophie數學課", "Date": "2025-11-15", "Correct": 0, "Total": 0},
     {"English": "multiply", "POS": "動詞", "Chinese_1": "乘", "Chinese_2": "繁殖", "Example": "Multiply 3 by 4.", "Course": "Sophie數學課", "Date": "2025-12-31", "Correct": 0, "Total": 0},
     {"English": "divide", "POS": "動詞", "Chinese_1": "除", "Chinese_2": "分開", "Example": "Divide 10 by 2.", "Course": "Sophie數學課", "Date": "2026-01-10", "Correct": 0, "Total": 0},
     {"English": "think", "POS": "動詞", "Chinese_1": "思考", "Chinese_2": "想", "Example": "I need to think about it.", "Course": "Cherie思考課", "Date": "2025-11-16", "Correct": 0, "Total": 0},
+]
+
+# 預設句型內容 (Fallback)
+INITIAL_SENTENCES = [
+    {"Category": "1.基礎描述句", "Template": "This ___ is very important.", "Options": ["test", "rule", "decision", "habit", "lesson"]},
+    {"Category": "1.基礎描述句", "Template": "This ___ is very expensive.", "Options": ["course", "phone", "trip", "book", "gift"]},
 ]
 
 # --- 1. Firestore 初始化 ---
@@ -41,8 +55,13 @@ def get_db():
 db = get_db()
 APP_ID = st.secrets.get("APP_ID", "flashcard-pro-v1")
 USER_LIST_PATH = f"artifacts/{APP_ID}/public/data/users"
+SENTENCE_CATALOG_PATH = f"artifacts/{APP_ID}/public/data/sentences"
+SENTENCE_DATA_BASE_PATH = f"artifacts/{APP_ID}/public/data"
 
 # --- 2. 工具函式 ---
+
+def hash_string(text):
+    return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -83,15 +102,28 @@ if "quiz_history" not in st.session_state:
     st.session_state.quiz_history = []
 if "audio_to_play" not in st.session_state:
     st.session_state.audio_to_play = None
+# 句型練習專用 State
+if "sentence_idx" not in st.session_state:
+    st.session_state.sentence_idx = 0
+if "completed_options" not in st.session_state:
+    st.session_state.completed_options = set() 
+if "current_sentences" not in st.session_state:
+    st.session_state.current_sentences = []
 
 init_users_in_db()
 
-# --- 4. 資料庫操作函式 ---
+# --- 4. 資料庫操作函式 (單字 & 句型) ---
 
 def get_vocab_path():
     if st.session_state.logged_in and st.session_state.user_info:
         uid = st.session_state.user_info["id"]
         return f"artifacts/{APP_ID}/users/{uid}/vocabulary"
+    return None
+
+def get_sentence_progress_path():
+    if st.session_state.logged_in and st.session_state.user_info:
+        uid = st.session_state.user_info["id"]
+        return f"artifacts/{APP_ID}/users/{uid}/sentence_progress"
     return None
 
 def sync_vocab_from_db(init_if_empty=False):
@@ -143,7 +175,130 @@ def delete_words_from_db(doc_ids):
         for doc_id in doc_ids:
             db.collection(path).document(doc_id).delete()
 
+# --- 句型資料庫操作 ---
+
+@st.cache_data(ttl=600)
+def fetch_sentence_catalogs():
+    """讀取公用題庫列表"""
+    if not db: return {}
+    docs = db.collection(SENTENCE_CATALOG_PATH).stream()
+    return {d.id: d.to_dict().get('name', d.id) for d in docs}
+
+@st.cache_data(ttl=600)
+def fetch_sentences_by_id(dataset_id):
+    """讀取特定題庫的句型，並依照 Order 排序"""
+    if not db: return []
+    path = f"{SENTENCE_DATA_BASE_PATH}/{dataset_id}"
+    docs = db.collection(path).stream()
+    data = [d.to_dict() for d in docs]
+    sorted_data = sorted(data, key=lambda x: x.get('Order', 9999))
+    return sorted_data
+
+def load_user_sentence_progress(template_hash):
+    path = get_sentence_progress_path()
+    if not db or not path: return []
+    doc = db.collection(path).document(template_hash).get()
+    if doc.exists:
+        return set(doc.to_dict().get("completed_options", []))
+    return set()
+
+def fetch_all_user_sentence_progress():
+    path = get_sentence_progress_path()
+    if not db or not path: return {}
+    docs = db.collection(path).stream()
+    return {d.id: d.to_dict().get("completed_options", []) for d in docs}
+
+def save_user_sentence_progress(template_str, completed_list):
+    path = get_sentence_progress_path()
+    if not db or not path: return
+    template_hash = hash_string(template_str)
+    data = {
+        "template_text": template_str,
+        "completed_options": list(completed_list),
+        "last_updated": firestore.SERVER_TIMESTAMP
+    }
+    db.collection(path).document(template_hash).set(data, merge=True)
+
 # --- 5. AI 與 JS 工具 ---
+
+def normalize_text(text):
+    if not text: return ""
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    return " ".join(text.split()).lower()
+
+def check_audio_batch(audio_file, template, options_list):
+    """
+    修正版：增強 JSON 解析穩定性、忽略大小寫比對
+    """
+    if sr is None:
+        return {"correct_options": [], "heard": "", "feedback": "系統錯誤：未安裝 SpeechRecognition。"}
+
+    recognizer = sr.Recognizer()
+    try:
+        with sr.AudioFile(audio_file) as source:
+            audio_data = recognizer.record(source)
+        transcribed_text = recognizer.recognize_google(audio_data, language="en-US")
+    except sr.UnknownValueError:
+        return {"correct_options": [], "heard": "(無法辨識)", "feedback": "聽不清楚，請再試一次。"}
+    except Exception as e:
+        return {"correct_options": [], "heard": "", "feedback": f"音訊錯誤: {str(e)}"}
+
+    # 步驟 2: 本地規則比對 (Fallback Check)
+    local_found = set()
+    norm_transcript = normalize_text(transcribed_text)
+    
+    # 建立小寫對照表，解決大小寫不一致問題
+    options_lower_map = {opt.lower(): opt for opt in options_list}
+    
+    for opt in options_list:
+        target_sent = template.replace("___", opt)
+        norm_target = normalize_text(target_sent)
+        if norm_target in norm_transcript:
+            local_found.add(opt)
+
+    # 步驟 3: AI 評分
+    prompt = f"""
+    Context: English pronunciation practice.
+    Template: "{template}"
+    Options to find: {options_list}
+    Transcribed Audio: "{transcribed_text}"
+    Task: Check which options appear in the transcript. Be flexible.
+    Return JSON: {{ "correct_options": ["opt1", "opt2"], "feedback": "Traditional Chinese feedback" }}
+    """
+    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}}
+    
+    ai_found = set()
+    feedback = "練習得不錯！"
+    try:
+        res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, timeout=30)
+        if res.status_code == 200:
+            content_text = res.json()['candidates'][0]['content']['parts'][0]['text']
+            # 清理 Markdown 標記，防止 json.loads 失敗
+            if "```json" in content_text:
+                content_text = content_text.split("```json")[1].split("```")[0]
+            elif "```" in content_text:
+                content_text = content_text.split("```")[1].split("```")[0]
+            
+            ai_result = json.loads(content_text.strip())
+            
+            # 處理 AI 回傳的大小寫可能不一致的問題
+            raw_ai_found = ai_result.get("correct_options", [])
+            for raw_opt in raw_ai_found:
+                if raw_opt in options_list:
+                    ai_found.add(raw_opt)
+                elif raw_opt.lower() in options_lower_map:
+                    ai_found.add(options_lower_map[raw_opt.lower()])
+            
+            feedback = ai_result.get("feedback", "加油！")
+    except Exception as e:
+        print(f"AI Check Error: {e}") # 僅後台打印，不影響前端
+
+    # 合併結果
+    final_corrects = list(local_found.union(ai_found))
+    # 再次確保回傳的都在原始選項列表中
+    final_corrects = [opt for opt in final_corrects if opt in options_list]
+
+    return {"correct_options": final_corrects, "heard": transcribed_text, "feedback": feedback}
 
 def call_gemini_to_complete(words_text, course_name, course_date):
     if not words_text.strip(): return []
@@ -225,6 +380,21 @@ def filter_vocab_data(vocab, selection):
             course_date = parts[1].strip()
             return df[(df['Course'] == course_name) & (df['Date'] == course_date)].to_dict('records')
     return vocab
+
+def get_sentence_category_options(sentences, catalog_name):
+    if not sentences: return [f"📚 {catalog_name} (全部)"]
+    df = pd.DataFrame(sentences)
+    if 'Category' not in df.columns: df['Category'] = '未分類'
+    unique_categories = sorted(df['Category'].unique())
+    options = [f"📚 {catalog_name} (全部)"]
+    for cat in unique_categories:
+        options.append(f"   🏷️ {cat}")
+    return options
+
+def filter_sentence_data(sentences, selection):
+    if " (全部)" in selection: return sentences
+    category = selection.replace("   🏷️ ", "").strip()
+    return [s for s in sentences if s.get('Category') == category]
 
 def keyboard_bridge():
     js = """<script>
@@ -339,7 +509,7 @@ with st.sidebar:
         st.markdown(f"### 👤 {user['name']}")
         st.caption(f"學號: {user['id']}")
         st.divider()
-        menu = st.radio("功能選單", ["學習儀表板", "單字管理", "單字練習"])
+        menu = st.radio("功能選單", ["學習儀表板", "單字管理", "單字練習", "句型口說"])
         if st.button("登出", use_container_width=True):
             st.session_state.logged_in = False
             st.session_state.user_info = None
@@ -354,25 +524,111 @@ else:
 
     if menu == "學習儀表板":
         st.title("📊 學習儀表板")
-        if not u_vocab:
-            st.info("目前尚無資料。")
-            if st.button("🔄 同步雲端"): sync_vocab_from_db(); st.rerun()
-        else:
-            options = get_course_options(u_vocab)
-            selection = st.selectbox("篩選檢視範圍：", options, key="dash_filter")
-            filtered_vocab = filter_vocab_data(u_vocab, selection)
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("單字數", len(filtered_vocab))
-            col2.metric("測驗次數", sum(v.get('Total', 0) for v in filtered_vocab))
-            
-            t_q = sum(v.get('Total', 0) for v in filtered_vocab)
-            acc = (sum(v.get('Correct', 0) for v in filtered_vocab) / t_q * 100) if t_q > 0 else 0
-            col3.metric("正確率", f"{acc:.1f}%")
-            
-            st.divider()
-            df = pd.DataFrame(filtered_vocab)
-            st.dataframe(df[['English', 'Chinese_1', 'POS', 'Course', 'Date', 'Correct', 'Total']], use_container_width=True, hide_index=True)
+        
+        tab_v, tab_s = st.tabs(["單字學習", "句型練習"])
+        
+        # --- 單字 Tab ---
+        with tab_v:
+            if not u_vocab:
+                st.info("尚無單字資料。")
+                if st.button("🔄 同步雲端"): sync_vocab_from_db(); st.rerun()
+            else:
+                options = get_course_options(u_vocab)
+                selection = st.selectbox("單字篩選範圍：", options, key="vocab_dash_filter")
+                filtered_vocab = filter_vocab_data(u_vocab, selection)
+                
+                col1, col2, col3 = st.columns(3)
+                
+                # Metric 1: 總單字數
+                total_vocab_count = len(filtered_vocab)
+                col1.metric("範圍內單字數", total_vocab_count)
+                
+                # Metric 2: 練習覆蓋率 (有做過練習的單字數 / 總單字數)
+                practiced_count = len([v for v in filtered_vocab if v.get('Total', 0) > 0])
+                coverage_rate = (practiced_count / total_vocab_count * 100) if total_vocab_count > 0 else 0
+                col2.metric("練習覆蓋率", f"{coverage_rate:.1f}%", help="有練習過的單字比例")
+                
+                # Metric 3: 答題正確率 (總答對 / 總答題) -> 品質指標
+                total_correct = sum(v.get('Correct', 0) for v in filtered_vocab)
+                total_attempts = sum(v.get('Total', 0) for v in filtered_vocab)
+                accuracy_rate = (total_correct / total_attempts * 100) if total_attempts > 0 else 0
+                col3.metric("答題正確率", f"{accuracy_rate:.1f}%", help="所有練習次數中的正確比例")
+                
+                st.divider()
+                st.dataframe(pd.DataFrame(filtered_vocab)[['English', 'Chinese_1', 'POS', 'Course', 'Date', 'Correct', 'Total']], use_container_width=True, hide_index=True)
+
+        # --- 句型 Tab ---
+        with tab_s:
+            catalogs = fetch_sentence_catalogs()
+            if not catalogs:
+                st.info("尚無句型資料庫。")
+            else:
+                # 準備選單
+                catalog_names = list(catalogs.values())
+                catalog_ids = list(catalogs.keys())
+                
+                combined_s_options = []
+                # 書名 -> ID 對照
+                book_map = {name: cid for cid, name in catalogs.items()}
+
+                for name, cid in zip(catalog_names, catalog_ids):
+                    combined_s_options.append(f"{name} (全部)")
+                    book_sentences = fetch_sentences_by_id(cid)
+                    if book_sentences:
+                        df_b = pd.DataFrame(book_sentences)
+                        if 'Category' in df_b.columns:
+                            cats = sorted(df_b['Category'].unique())
+                            for c in cats:
+                                combined_s_options.append(f"{name} | {c}")
+                
+                s_selection = st.selectbox("句型篩選範圍：", combined_s_options, key="sentence_dash_filter")
+                
+                # 獲取篩選後的句型資料
+                if " (全部)" in s_selection:
+                    book_name = s_selection.replace(" (全部)", "")
+                    target_id = book_map.get(book_name)
+                    target_sentences = fetch_sentences_by_id(target_id)
+                else:
+                    book_name, category = s_selection.split(" | ")
+                    target_id = book_map.get(book_name)
+                    all_sentences = fetch_sentences_by_id(target_id)
+                    target_sentences = [s for s in all_sentences if s.get('Category') == category]
+                
+                if not target_sentences:
+                    st.info("無句型資料。")
+                else:
+                    # 統計數據
+                    user_progress = fetch_all_user_sentence_progress()
+                    
+                    total_s_count = len(target_sentences)
+                    fully_completed_count = 0
+                    
+                    progress_table = []
+                    
+                    for s in target_sentences:
+                        h = hash_string(s['Template'])
+                        user_done = user_progress.get(h, [])
+                        s_opts = s.get('Options', [])
+                        
+                        is_done = set(s_opts).issubset(set(user_done))
+                        if is_done: fully_completed_count += 1
+                        
+                        progress_table.append({
+                            "分類": s.get('Category', ''),
+                            "句型": s['Template'],
+                            "選項數": len(s_opts),
+                            "已完成": len(set(s_opts).intersection(set(user_done))),
+                            "狀態": "✅" if is_done else "💪"
+                        })
+                    
+                    sc1, sc2, sc3 = st.columns(3)
+                    sc1.metric("總句數", total_s_count)
+                    sc2.metric("已完成句數", fully_completed_count)
+                    s_rate = (fully_completed_count / total_s_count * 100) if total_s_count > 0 else 0
+                    sc3.metric("完成率", f"{s_rate:.1f}%")
+                    
+                    st.divider()
+                    st.dataframe(pd.DataFrame(progress_table), use_container_width=True, hide_index=True)
 
     elif menu == "單字管理":
         st.title("⚙️ 單字管理")
@@ -566,6 +822,115 @@ else:
                     if not wrongs.empty:
                         st.subheader("❌ 錯誤回顧")
                         st.table(wrongs[["英文", "你的輸入", "正確答案"]])
+
+    elif menu == "句型口說":
+        st.title("🗣️ 句型口說挑戰")
+        catalogs = fetch_sentence_catalogs()
+        if not catalogs:
+            st.info("目前雲端沒有句型資料庫。")
+            if INITIAL_SENTENCES:
+                st.warning("⚠️ 使用預設題庫模式 (未連結雲端)"); current_sentences = INITIAL_SENTENCES
+            else: st.stop()
+        else:
+            catalog_names = list(catalogs.values())
+            catalog_ids = list(catalogs.keys())
+            
+            combined_options = []
+            book_map = {name: cid for cid, name in catalogs.items()}
+
+            for name, cid in zip(catalog_names, catalog_ids):
+                combined_options.append(f"{name} (全部)")
+                book_sentences = fetch_sentences_by_id(cid)
+                if book_sentences:
+                    df_b = pd.DataFrame(book_sentences)
+                    if 'Category' in df_b.columns:
+                        cats = sorted(df_b['Category'].unique())
+                        for c in cats:
+                            combined_options.append(f"{name} | {c}")
+            
+            selection = st.selectbox("選擇練習範圍：", combined_options)
+            
+            if " (全部)" in selection:
+                book_name = selection.replace(" (全部)", "")
+                target_id = book_map.get(book_name)
+                current_sentences = fetch_sentences_by_id(target_id)
+            else:
+                book_name, category = selection.split(" | ")
+                target_id = book_map.get(book_name)
+                all_book_sentences = fetch_sentences_by_id(target_id)
+                current_sentences = [s for s in all_book_sentences if s.get('Category') == category]
+        
+        if not current_sentences: st.info("此範圍內無題目。")
+        else:
+            if st.session_state.sentence_idx >= len(current_sentences):
+                st.session_state.sentence_idx = 0
+            
+            curr_sent = current_sentences[st.session_state.sentence_idx]
+            template = curr_sent['Template']
+            options = curr_sent['Options']
+            
+            template_hash = hash_string(template)
+            if "loaded_hash" not in st.session_state or st.session_state.loaded_hash != template_hash:
+                st.session_state.completed_options = load_user_sentence_progress(template_hash)
+                st.session_state.loaded_hash = template_hash
+
+            progress_placeholder = st.empty()
+            def render_progress():
+                c = len(st.session_state.completed_options); t = len(options)
+                progress_placeholder.progress(c / t, text=f"完成進度: {c}/{t}")
+            render_progress()
+            
+            st.subheader(f"題目 ({curr_sent.get('Category', '一般')})")
+            st.markdown(f"### {template}", unsafe_allow_html=True)
+            
+            options_placeholder = st.empty()
+            def render_options_status():
+                with options_placeholder.container():
+                    st.caption("請一口氣唸出包含下方所有單字的句子：")
+                    cols = st.columns(len(options))
+                    for i, opt in enumerate(options):
+                        if opt in st.session_state.completed_options: cols[i].success(f"✅ {opt}")
+                        else: cols[i].info(f"{opt}")
+            render_options_status()
+            
+            st.divider()
+            st.write("請按下錄音，並嘗試唸出所有句子 (例如: This test is very important. This rule is...)")
+            audio_val = st.audio_input("🔴 點擊開始錄音", key=f"rec_{st.session_state.sentence_idx}")
+            
+            if audio_val:
+                with st.spinner("AI 正在分析您的錄音..."):
+                    remaining = [opt for opt in options if opt not in st.session_state.completed_options]
+                    if not remaining: st.success("本題已全部完成！")
+                    else:
+                        result = check_audio_batch(audio_val, template, options)
+                        new_corrects = result.get("correct_options", [])
+                        if new_corrects:
+                            for nc in new_corrects:
+                                if nc in options: st.session_state.completed_options.add(nc)
+                            save_user_sentence_progress(template, st.session_state.completed_options)
+                            st.success(f"🎉 辨識出：{', '.join(new_corrects)}")
+                            render_options_status(); render_progress() 
+                            if len(st.session_state.completed_options) == len(options): st.balloons()
+                        else:
+                            st.warning("🤔 似乎沒有辨識到新的正確句子，請再試一次。")
+                        with st.expander("查看完整聽寫內容"):
+                            st.write(result.get("heard"))
+                            st.caption(f"AI 建議: {result.get('feedback')}")
+            
+            st.write("")
+            c1, c2 = st.columns(2)
+            if c1.button("← 上一題", use_container_width=True):
+                st.session_state.sentence_idx = (st.session_state.sentence_idx - 1) % len(current_sentences)
+                st.session_state.completed_options = set()
+                del st.session_state.loaded_hash
+                st.rerun()
+            if c2.button("下一題 →", use_container_width=True):
+                st.session_state.sentence_idx = (st.session_state.sentence_idx + 1) % len(current_sentences)
+                st.session_state.completed_options = set()
+                del st.session_state.loaded_hash
+                st.rerun()
+            
+            keyboard_bridge()
 
 st.divider()
 st.caption("Flashcard Pro - 資料已加密並同步至 Firestore")
