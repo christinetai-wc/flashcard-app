@@ -347,6 +347,31 @@ Requirements:
     except: pass
     return []
 
+def get_combined_dashboard_options(vocab, catalogs):
+    options = ["單字 (全部)"]
+    if vocab:
+        df = pd.DataFrame(vocab)
+        if 'Course' not in df.columns: df['Course'] = '未分類'
+        if 'Date' not in df.columns: df['Date'] = 'N/A'
+        unique_courses = sorted(df['Course'].unique())
+        for c in unique_courses:
+            dates = df[df['Course'] == c]['Date'].unique()
+            for d in sorted(dates, reverse=True):
+                options.append(f"單字 | {c} | {d}")
+    if catalogs:
+        catalog_names = list(catalogs.values())
+        catalog_ids = list(catalogs.keys())
+        for name, cid in zip(catalog_names, catalog_ids):
+            options.append(f"句型 | {name} (全部)")
+            book_sentences = fetch_sentences_by_id(cid)
+            if book_sentences:
+                df_b = pd.DataFrame(book_sentences)
+                if 'Category' in df_b.columns:
+                    cats = sorted(df_b['Category'].unique())
+                    for cat in cats:
+                        options.append(f"句型 | {name} | {cat}")
+    return options
+
 def get_course_options(vocab):
     if not vocab: return ["全部單字"]
     df = pd.DataFrame(vocab)
@@ -457,6 +482,25 @@ def text_to_speech(text):
     """
     html(js_code, height=40)
 
+# --- 客製化堆疊進度條函式 (水平排列版，無文字) ---
+def render_custom_progress_bar(label_left, green_pct, yellow_pct, empty_pct):
+    """
+    繪製一個 HTML/CSS 堆疊進度條，標籤與進度條在同一行，移除右側文字，取消深色字體限制
+    """
+    bar_html = f"""
+    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+        <div style="width: 140px; min-width: 140px; font-size: 0.9rem; margin-right: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{label_left}">
+            {label_left}
+        </div>
+        <div style="flex-grow: 1; background-color: #e0e0e0; border-radius: 6px; height: 16px; display: flex; overflow: hidden;">
+            <div style="width: {green_pct*100}%; background-color: #28a745; height: 100%;" title="已熟練/已完成"></div>
+            <div style="width: {yellow_pct*100}%; background-color: #ffc107; height: 100%;" title="練習中"></div>
+            <div style="width: {empty_pct*100}%; background-color: #e0e0e0; height: 100%;" title="未開始"></div>
+        </div>
+    </div>
+    """
+    st.markdown(bar_html, unsafe_allow_html=True)
+
 def attempt_login():
     """處理登入的 Callback 函式"""
     selected_name = st.session_state.login_user_name
@@ -525,8 +569,92 @@ else:
     if menu == "學習儀表板":
         st.title("📊 學習儀表板")
         
-        tab_v, tab_s = st.tabs(["單字學習", "句型練習"])
+        # 調整 Tab 順序：學習戰績表(原總表)在第一位
+        tab_total, tab_v, tab_s = st.tabs(["學習戰績表", "單字學習", "句型練習"])
         
+        # --- 學習戰績表 Tab (新設計) ---
+        with tab_total:
+            st.subheader("📈 學習戰績表")
+            
+            # 1. 單字概況 (Stacked Bar)
+            st.markdown("#### 📚 單字課程進度")
+            if u_vocab:
+                df_v = pd.DataFrame(u_vocab)
+                if 'Course' not in df_v.columns: df_v['Course'] = '未分類'
+                if 'Date' not in df_v.columns: df_v['Date'] = 'N/A'
+                
+                courses = sorted(df_v['Course'].unique())
+                for course in courses:
+                    with st.expander(f"📘 {course}", expanded=True):
+                        c_data = df_v[df_v['Course'] == course]
+                        dates = sorted(c_data['Date'].unique(), reverse=True)
+                        for d in dates:
+                            d_data = c_data[c_data['Date'] == d]
+                            total = len(d_data)
+                            
+                            mastered = len(d_data[d_data['Correct'] > 0])
+                            learning = len(d_data[(d_data['Total'] > 0) & (d_data['Correct'] == 0)])
+                            
+                            p_mastered = mastered / total if total > 0 else 0
+                            p_learning = learning / total if total > 0 else 0
+                            p_empty = 1 - p_mastered - p_learning
+                            
+                            # 顯示堆疊進度條，移除右側文字
+                            render_custom_progress_bar(
+                                f"📅 {d}", 
+                                p_mastered, p_learning, p_empty
+                            )
+            else:
+                st.info("尚無單字資料。")
+
+            st.divider()
+
+            # 2. 句型概況 (Stacked Bar)
+            st.markdown("#### 🗣️ 句型書進度")
+            catalogs = fetch_sentence_catalogs()
+            if catalogs:
+                catalog_names = list(catalogs.values())
+                catalog_ids = list(catalogs.keys())
+                user_progress = fetch_all_user_sentence_progress()
+                
+                for name, cid in zip(catalog_names, catalog_ids):
+                    b_sentences = fetch_sentences_by_id(cid)
+                    if not b_sentences: continue
+                    
+                    with st.expander(f"📙 {name}", expanded=True):
+                        df_s = pd.DataFrame(b_sentences)
+                        if 'Category' not in df_s.columns: df_s['Category'] = '未分類'
+                        cats = sorted(df_s['Category'].unique())
+                        
+                        for cat in cats:
+                            cat_sents = [s for s in b_sentences if s.get('Category') == cat]
+                            tot = len(cat_sents)
+                            
+                            cnt_done = 0
+                            cnt_progress = 0
+                            
+                            for s in cat_sents:
+                                h = hash_string(s['Template'])
+                                user_done = user_progress.get(h, [])
+                                s_opts = s.get('Options', [])
+                                
+                                if not s_opts: continue
+                                
+                                intersection = len(set(s_opts).intersection(set(user_done)))
+                                if intersection == len(s_opts):
+                                    cnt_done += 1
+                                elif intersection > 0:
+                                    cnt_progress += 1
+                            
+                            p_done = cnt_done / tot if tot > 0 else 0
+                            p_prog = cnt_progress / tot if tot > 0 else 0
+                            p_empty = 1 - p_done - p_prog
+                            
+                            render_custom_progress_bar(
+                                f"🏷️ {cat}", 
+                                p_done, p_prog, p_empty
+                            )
+
         # --- 單字 Tab ---
         with tab_v:
             if not u_vocab:
