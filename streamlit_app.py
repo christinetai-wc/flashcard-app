@@ -489,7 +489,7 @@ def render_custom_progress_bar(label_left, green_pct, yellow_pct, empty_pct):
     """
     bar_html = f"""
     <div style="display: flex; align-items: center; margin-bottom: 8px;">
-        <div style="width: 140px; min-width: 140px; font-size: 0.9rem; margin-right: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{label_left}">
+        <div style="width: 180px; min-width: 180px; font-size: 0.9rem; margin-right: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{label_left}">
             {label_left}
         </div>
         <div style="flex-grow: 1; background-color: #e0e0e0; border-radius: 6px; height: 16px; display: flex; overflow: hidden;">
@@ -601,7 +601,7 @@ else:
                             
                             # 顯示堆疊進度條，移除右側文字
                             render_custom_progress_bar(
-                                f"📅 {d}", 
+                                f"📅 {d} ({total}個)", 
                                 p_mastered, p_learning, p_empty
                             )
             else:
@@ -651,7 +651,7 @@ else:
                             p_empty = 1 - p_done - p_prog
                             
                             render_custom_progress_bar(
-                                f"🏷️ {cat}", 
+                                f"🏷️ {cat} ({tot}句)", 
                                 p_done, p_prog, p_empty
                             )
 
