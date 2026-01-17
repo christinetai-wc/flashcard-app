@@ -105,10 +105,6 @@ if "audio_to_play" not in st.session_state:
 # 導航狀態管理
 if "nav_selection" not in st.session_state:
     st.session_state.nav_selection = "學習儀表板"
-if "practice_filter_preset" not in st.session_state:
-    st.session_state.practice_filter_preset = None
-if "sentence_filter_preset" not in st.session_state:
-    st.session_state.sentence_filter_preset = None
 
 # 句型練習專用 State
 if "sentence_idx" not in st.session_state:
@@ -117,6 +113,10 @@ if "completed_options" not in st.session_state:
     st.session_state.completed_options = set() 
 if "current_sentences" not in st.session_state:
     st.session_state.current_sentences = []
+if "last_sentence_filter_sig" not in st.session_state:
+    st.session_state.last_sentence_filter_sig = ""
+if "current_dataset_id" not in st.session_state:
+    st.session_state.current_dataset_id = None # 記錄當前正在練習哪個題庫
 
 init_users_in_db()
 
@@ -216,7 +216,63 @@ def fetch_all_user_sentence_progress():
     docs = db.collection(path).stream()
     return {d.id: d.to_dict().get("completed_options", []) for d in docs}
 
-def save_user_sentence_progress(template_str, completed_list):
+# --- 新增：更新使用者統計摘要 ---
+def update_user_stats_summary(dataset_id):
+    """計算並更新使用者的該題庫統計資訊"""
+    if not db or not dataset_id: return
+    user_name = st.session_state.get("current_user_name")
+    if not user_name: return
+
+    # 1. 取得題庫資訊 (利用快取)
+    sentences = fetch_sentences_by_id(dataset_id)
+    catalogs = fetch_sentence_catalogs()
+    dataset_name = catalogs.get(dataset_id, dataset_id)
+    
+    total_count = len(sentences)
+    if total_count == 0: return
+
+    # 2. 取得使用者在該題庫的所有進度
+    # 這裡直接查詢 Firestore，因為需要最新數據
+    progress_path = get_sentence_progress_path()
+    docs = db.collection(progress_path).where("dataset_id", "==", dataset_id).stream()
+    
+    progress_map = {}
+    for d in docs:
+        data = d.to_dict()
+        progress_map[d.id] = set(data.get("completed_options", []))
+        
+    completed_count = 0
+    in_progress_count = 0
+    
+    for s in sentences:
+        tid = hash_string(s['Template'])
+        user_done = progress_map.get(tid, set())
+        all_opts = set(s.get('Options', []))
+        
+        if not all_opts: continue
+        
+        if user_done:
+            if all_opts.issubset(user_done):
+                completed_count += 1
+            else:
+                in_progress_count += 1
+    
+    # 3. 更新使用者文件
+    # 結構: sentence_stats: { dataset_id: { ... } }
+    user_ref = db.collection(USER_LIST_PATH).document(user_name)
+    stats_data = {
+        f"sentence_stats.{dataset_id}": {
+            "name": dataset_name,
+            "total": total_count,
+            "completed": completed_count,
+            "in_progress": in_progress_count,
+            "last_active": firestore.SERVER_TIMESTAMP
+        }
+    }
+    user_ref.update(stats_data)
+
+def save_user_sentence_progress(template_str, completed_list, dataset_id=None):
+    """儲存使用者對某句型的練習進度，並標記來源題庫 ID"""
     path = get_sentence_progress_path()
     if not db or not path: return
     template_hash = hash_string(template_str)
@@ -225,7 +281,45 @@ def save_user_sentence_progress(template_str, completed_list):
         "completed_options": list(completed_list),
         "last_updated": firestore.SERVER_TIMESTAMP
     }
+    # 新增：記錄這是哪本題庫的進度，方便日後管理
+    if dataset_id:
+        data["dataset_id"] = dataset_id
+        
     db.collection(path).document(template_hash).set(data, merge=True)
+    
+    # 同步更新統計摘要
+    if dataset_id:
+        update_user_stats_summary(dataset_id)
+
+def clear_user_sentence_history(target_dataset_id=None):
+    """
+    清除該使用者所有的句型練習紀錄。
+    如果指定了 target_dataset_id，只清除該題庫的紀錄。
+    """
+    path = get_sentence_progress_path()
+    if not db or not path: return
+    # 批次刪除
+    docs = db.collection(path).stream()
+    batch = db.batch()
+    count = 0
+    deleted_count = 0
+    
+    for d in docs:
+        doc_data = d.to_dict()
+        # 如果指定了題庫ID，且該記錄不屬於此題庫，則跳過
+        if target_dataset_id and doc_data.get("dataset_id") != target_dataset_id:
+            continue
+            
+        batch.delete(d.reference)
+        count += 1
+        deleted_count += 1
+        if count >= 400:
+            batch.commit()
+            batch = db.batch()
+            count = 0
+    if count > 0:
+        batch.commit()
+    return deleted_count
 
 # --- 5. AI 與 JS 工具 ---
 
@@ -565,7 +659,6 @@ def render_custom_progress_bar(label_left, green_pct, yellow_pct, empty_pct):
 
 # --- 導航用回調函式 ---
 def navigate_to_practice(preset):
-    st.session_state.practice_filter_preset = preset
     st.session_state.nav_selection = "單字練習"
     # 強制更新練習頁面的選單狀態
     st.session_state["practice_filter"] = preset
@@ -702,6 +795,62 @@ div[data-testid="stExpander"] button:focus {
 if not st.session_state.logged_in:
     st.title("🚀 歡迎使用 Flashcard Pro")
     st.info("請登入以開始練習。預設密碼 1234。")
+    
+    st.divider()
+    st.subheader("🏆 全班句型練習排行榜")
+    
+    # 讀取排行榜數據
+    all_users = fetch_users_list()
+    leaderboard_items = []
+    
+    for uid, u_data in all_users.items():
+        s_stats = u_data.get("sentence_stats", {})
+        if not s_stats: continue
+            
+        for book_id, stat in s_stats.items():
+            if not isinstance(stat, dict): continue
+            total = stat.get('total', 0)
+            if total == 0: continue
+            
+            completed = stat.get('completed', 0)
+            rate = completed / total
+            
+            # 將 Timestamp 轉換為字串
+            last_active = stat.get('last_active')
+            if hasattr(last_active, 'date'):
+                last_active_str = last_active.strftime("%m-%d %H:%M")
+            else:
+                last_active_str = str(last_active)
+
+            leaderboard_items.append({
+                "學生": u_data.get('name', uid),
+                "句型書": stat.get('name', book_id),
+                "進度": f"{completed}/{total}",
+                "完成率": rate,
+                "最後更新": last_active_str
+            })
+    
+    if leaderboard_items:
+        df_lb = pd.DataFrame(leaderboard_items)
+        df_lb = df_lb.sort_values(by=["完成率", "最後更新"], ascending=[False, False])
+        
+        st.dataframe(
+            df_lb,
+            column_config={
+                "完成率": st.column_config.ProgressColumn(
+                    "完成率",
+                    help="已完成句數比例",
+                    format="%.0f%%",
+                    min_value=0,
+                    max_value=1,
+                )
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("目前還沒有人開始練習句型，快登入成為第一名！")
+
 else:
     u_vocab = st.session_state.u_vocab
 
@@ -811,17 +960,8 @@ else:
                 if st.button("🔄 同步雲端"): sync_vocab_from_db(); st.rerun()
             else:
                 options = get_course_options(u_vocab)
-                
-                # 從 session state 中讀取預設值
-                default_idx = 0
-                if st.session_state.practice_filter_preset in options:
-                    default_idx = options.index(st.session_state.practice_filter_preset)
-                
-                selection = st.selectbox("單字篩選範圍：", options, index=default_idx, key="vocab_dash_filter")
-                
-                # 使用後清除
-                if st.session_state.practice_filter_preset:
-                    st.session_state.practice_filter_preset = None
+                # 直接使用 key="vocab_dash_filter" 從 session state 取值，不使用 index
+                selection = st.selectbox("單字篩選範圍：", options, key="vocab_dash_filter")
                 
                 filtered_vocab = filter_vocab_data(u_vocab, selection)
                 
@@ -868,18 +1008,10 @@ else:
                             cats = sorted(df_b['Category'].unique())
                             for c in cats:
                                 combined_s_options.append(f"{name} | {c}")
-                 
-                # 接收導航預設值
-                default_idx = 0
-                if st.session_state.sentence_filter_preset in combined_s_options:
-                    default_idx = combined_s_options.index(st.session_state.sentence_filter_preset)
                 
+                # 直接使用 key="sentence_dash_filter" 從 session state 取值，不使用 index
                 s_selection = st.selectbox("句型篩選範圍：", combined_s_options, key="sentence_dash_filter")
                 
-                # 清除預設
-                if st.session_state.sentence_filter_preset:
-                    st.session_state.sentence_filter_preset = None
-
                 if " (全部)" in s_selection:
                     book_name = s_selection.replace(" (全部)", "")
                     target_id = book_map.get(book_name)
@@ -922,9 +1054,17 @@ else:
                     sc2.metric("已完成句數", fully_completed_count)
                     s_rate = (fully_completed_count / total_s_count * 100) if total_s_count > 0 else 0
                     sc3.metric("完成率", f"{s_rate:.1f}%")
-                    
+
                     st.divider()
                     st.dataframe(pd.DataFrame(progress_table), use_container_width=True, hide_index=True)
+                    
+                    # --- 新增：清除紀錄按鈕 ---
+                    if st.button("🗑️ 清除所有句型練習紀錄 (無法復原)", type="primary"):
+                        clear_user_sentence_history(target_id)
+                        st.success("已清除所有進度！")
+                        time.sleep(1)
+                        st.rerun()
+
 
     elif menu == "單字管理":
         st.title("⚙️ 單字管理")
@@ -1041,18 +1181,9 @@ else:
     elif menu == "單字練習":
         st.title("✏️ 單字練習")
         options = get_course_options(u_vocab)
+        # 直接使用 key="practice_filter" 從 session state 取值，不使用 index
+        selection = st.selectbox("🎯 選擇練習範圍：", options, key="practice_filter")
         
-        # 檢查是否有來自儀表板的預設篩選值
-        default_idx = 0
-        if st.session_state.practice_filter_preset in options:
-            default_idx = options.index(st.session_state.practice_filter_preset)
-        
-        selection = st.selectbox("🎯 選擇練習範圍：", options, index=default_idx, key="practice_filter")
-        
-        # 清除預設值，以免卡住
-        if st.session_state.practice_filter_preset:
-            st.session_state.practice_filter_preset = None
-            
         current_set = filter_vocab_data(u_vocab, selection)
         
         tab_p, tab_t = st.tabs(["快閃練習", "實力測驗"])
@@ -1155,24 +1286,45 @@ else:
                         for c in cats:
                             combined_options.append(f"{name} | {c}")
             
-            default_idx = 0
-            if st.session_state.sentence_filter_preset in combined_options:
-                default_idx = combined_options.index(st.session_state.sentence_filter_preset)
-            selection = st.selectbox("選擇練習範圍：", combined_options, index=default_idx, key="sentence_filter")
-            if st.session_state.sentence_filter_preset: st.session_state.sentence_filter_preset = None
-
+            # 直接使用 key="sentence_filter" 從 session state 取值，不使用 index
+            selection = st.selectbox("選擇練習範圍：", combined_options, key="sentence_filter")
+            
             if " (全部)" in selection:
                 book_name = selection.replace(" (全部)", "")
                 target_id = book_map.get(book_name)
                 current_sentences = fetch_sentences_by_id(target_id)
+                # 記錄當前題庫 ID 供儲存時使用
+                st.session_state.current_dataset_id = target_id
             else:
                 book_name, category = selection.split(" | ")
                 target_id = book_map.get(book_name)
+                # 記錄當前題庫 ID 供儲存時使用
+                st.session_state.current_dataset_id = target_id
                 all_book_sentences = fetch_sentences_by_id(target_id)
                 current_sentences = [s for s in all_book_sentences if s.get('Category') == category]
         
         if not current_sentences: st.info("此範圍內無題目。")
         else:
+            # 智慧跳轉：如果是剛進入頁面（或切換題庫），嘗試跳到第一題未完成的
+            # 我們用 session_state.last_sentence_filter_sig 來判斷是否切換了題庫
+            current_filter_sig = selection
+            if st.session_state.last_sentence_filter_sig != current_filter_sig:
+                # 切換了題庫，尋找第一個未完成的
+                user_progress = fetch_all_user_sentence_progress()
+                found_idx = 0
+                for i, s in enumerate(current_sentences):
+                    h = hash_string(s['Template'])
+                    done = user_progress.get(h, [])
+                    opts = s.get('Options', [])
+                    if not set(opts).issubset(set(done)):
+                        found_idx = i
+                        break
+                st.session_state.sentence_idx = found_idx
+                st.session_state.completed_options = set() # 重置當前題目的完成狀態
+                st.session_state.last_sentence_filter_sig = current_filter_sig
+                if "loaded_hash" in st.session_state: del st.session_state.loaded_hash
+            
+            # 確保索引不越界
             if st.session_state.sentence_idx >= len(current_sentences):
                 st.session_state.sentence_idx = 0
             
@@ -1218,13 +1370,13 @@ else:
                         if new_corrects:
                             for nc in new_corrects:
                                 if nc in options: st.session_state.completed_options.add(nc)
-                            save_user_sentence_progress(template, st.session_state.completed_options)
+                            save_user_sentence_progress(template, st.session_state.completed_options, dataset_id=st.session_state.current_dataset_id)
                             st.success(f"🎉 辨識出：{', '.join(new_corrects)}")
                             render_options_status(); render_progress() 
-                            if len(st.session_state.completed_options) == len(options): st.balloons()
+                            if len(st.session_state.completed_options) == len(options): st.balloons()                            
                         else:
                             st.warning("🤔 似乎沒有辨識到新的正確句子，請再試一次。")
-                        with st.expander("查看完整聽寫內容"):
+                        with st.expander("查看完整聽寫內容", expanded=True):
                             st.write(result.get("heard"))
                             st.caption(f"AI 建議: {result.get('feedback')}")
             
