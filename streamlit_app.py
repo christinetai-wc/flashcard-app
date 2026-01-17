@@ -13,7 +13,7 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 from streamlit.components.v1 import html
 
-# --- 新增：嘗試匯入 SpeechRecognition ---
+# --- 新增：嘗試匯入 SpeechRecognition (保留供其他用途，但主功能改用 Gemini Audio) ---
 try:
     import speech_recognition as sr
 except ImportError:
@@ -236,52 +236,71 @@ def normalize_text(text):
 
 def check_audio_batch(audio_file, template, options_list):
     """
-    修正版：增強 JSON 解析穩定性、忽略大小寫比對
+    批次語音檢查：
+    1. 優先使用 Gemini (多模態) 處理音訊 + 轉錄 + 判斷。
+    2. 如果 Gemini 沒抓到任何選項 (correct_options 為空) 或失敗，才使用 SpeechRecognition (SR) 做 Fallback。
     """
-    if sr is None:
-        return {"correct_options": [], "heard": "", "feedback": "系統錯誤：未安裝 SpeechRecognition。"}
+    # --- 準備：讀取 Prompt 檔案 ---
+    prompt_file = "pronunciation_feedback_prompt.md"
+    base_prompt = ""
+    if os.path.exists(prompt_file):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            base_prompt = f.read()
+    else:
+        # Fallback prompt if file is missing
+        base_prompt = """
+        Context: English pronunciation practice for non-native speakers.
+        Template Sentence: "{template}"
+        Target Vocabulary to fill in the blank: {options_list}
+        
+        Task:
+        1. Listen to the audio provided.
+        2. Transcribe it exactly as heard.
+        3. Identify which of the 'Target Vocabulary' appear in the speech within the sentence structure.
+        4. Be flexible with minor pronunciation errors, but key words must be recognizable.
+        5. Provide specific, constructive feedback in Traditional Chinese.
 
-    recognizer = sr.Recognizer()
+        Return JSON: 
+        {{ 
+            "transcript": "Transcription of the audio",
+            "correct_options": ["opt1", "opt2"], 
+            "feedback": "Specific feedback here" 
+        }}
+        """
+
+    # 填入 Prompt 變數
+    prompt = base_prompt.format(
+        template=template,
+        options_list=options_list
+    )
+
+    # 讀取音訊 Bytes
+    audio_file.seek(0)
+    audio_bytes = audio_file.read()
+    encoded_audio = base64.b64encode(audio_bytes).decode('utf-8')
+    
+    # --- 嘗試 1：Gemini 多模態 (音訊直接輸入) ---
+    ai_corrects = []
+    ai_transcript = ""
+    ai_feedback = ""
+    gemini_success = False
+    
+    gemini_payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "audio/wav", "data": encoded_audio}}
+            ]
+        }],
+        "generationConfig": {"responseMimeType": "application/json"}
+    }
+    
     try:
-        with sr.AudioFile(audio_file) as source:
-            audio_data = recognizer.record(source)
-        transcribed_text = recognizer.recognize_google(audio_data, language="en-US")
-    except sr.UnknownValueError:
-        return {"correct_options": [], "heard": "(無法辨識)", "feedback": "聽不清楚，請再試一次。"}
-    except Exception as e:
-        return {"correct_options": [], "heard": "", "feedback": f"音訊錯誤: {str(e)}"}
-
-    # 步驟 2: 本地規則比對 (Fallback Check)
-    local_found = set()
-    norm_transcript = normalize_text(transcribed_text)
-    
-    # 建立小寫對照表，解決大小寫不一致問題
-    options_lower_map = {opt.lower(): opt for opt in options_list}
-    
-    for opt in options_list:
-        target_sent = template.replace("___", opt)
-        norm_target = normalize_text(target_sent)
-        if norm_target in norm_transcript:
-            local_found.add(opt)
-
-    # 步驟 3: AI 評分
-    prompt = f"""
-    Context: English pronunciation practice.
-    Template: "{template}"
-    Options to find: {options_list}
-    Transcribed Audio: "{transcribed_text}"
-    Task: Check which options appear in the transcript. Be flexible.
-    Return JSON: {{ "correct_options": ["opt1", "opt2"], "feedback": "Traditional Chinese feedback" }}
-    """
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}}
-    
-    ai_found = set()
-    feedback = "練習得不錯！"
-    try:
-        res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, timeout=30)
+        res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=gemini_payload, timeout=30)
         if res.status_code == 200:
             content_text = res.json()['candidates'][0]['content']['parts'][0]['text']
-            # 清理 Markdown 標記，防止 json.loads 失敗
+            
+            # 清理 JSON 字串
             if "```json" in content_text:
                 content_text = content_text.split("```json")[1].split("```")[0]
             elif "```" in content_text:
@@ -289,53 +308,88 @@ def check_audio_batch(audio_file, template, options_list):
             
             ai_result = json.loads(content_text.strip())
             
-            # 處理 AI 回傳的大小寫可能不一致的問題
+            ai_transcript = ai_result.get("transcript", "")
+            ai_feedback = ai_result.get("feedback", "加油！")
+            
+            # 處理大小寫
             raw_ai_found = ai_result.get("correct_options", [])
+            options_lower_map = {opt.lower(): opt for opt in options_list}
             for raw_opt in raw_ai_found:
                 if raw_opt in options_list:
-                    ai_found.add(raw_opt)
+                    ai_corrects.append(raw_opt)
                 elif raw_opt.lower() in options_lower_map:
-                    ai_found.add(options_lower_map[raw_opt.lower()])
+                    ai_corrects.append(options_lower_map[raw_opt.lower()])
             
-            feedback = ai_result.get("feedback", "加油！")
+            gemini_success = True
+            
     except Exception as e:
-        print(f"AI Check Error: {e}") # 僅後台打印，不影響前端
+        print(f"Gemini Audio Error: {e}")
 
-    # 合併結果
-    final_corrects = list(local_found.union(ai_found))
-    # 再次確保回傳的都在原始選項列表中
-    final_corrects = [opt for opt in final_corrects if opt in options_list]
+    # 如果 Gemini 成功且有抓到東西，直接回傳
+    if gemini_success and ai_corrects:
+        return {
+            "correct_options": ai_corrects,
+            "heard": ai_transcript,
+            "feedback": ai_feedback
+        }
 
-    return {"correct_options": final_corrects, "heard": transcribed_text, "feedback": feedback}
+    # --- 嘗試 2：Fallback (本地 SR + 字串比對) ---
+    # 當 Gemini 沒抓到 (ai_corrects 為空) 或 連線失敗 時執行
+    
+    # 確保有安裝 SR
+    if sr:
+        audio_file.seek(0) # 重置指針
+        recognizer = sr.Recognizer()
+        local_transcript = ""
+        try:
+            with sr.AudioFile(audio_file) as source:
+                audio_data = recognizer.record(source)
+            local_transcript = recognizer.recognize_google(audio_data, language="en-US")
+        except:
+            pass # SR 失敗就維持空字串
+
+        if local_transcript:
+            local_found = []
+            norm_transcript = normalize_text(local_transcript)
+            for opt in options_list:
+                target_sent = template.replace("___", opt)
+                norm_target = normalize_text(target_sent)
+                if norm_target in norm_transcript:
+                    local_found.append(opt)
+            
+            # 如果本地比對有抓到，就使用本地結果
+            if local_found:
+                return {
+                    "correct_options": local_found,
+                    "heard": local_transcript,
+                    "feedback": "AI 未偵測到，但本地規則比對成功！(Fallback)"
+                }
+            
+            # 如果本地也沒抓到，但 Gemini 有回傳 transcript，優先顯示 Gemini 的聽寫結果
+            if gemini_success:
+                 return {
+                    "correct_options": [],
+                    "heard": ai_transcript,
+                    "feedback": ai_feedback
+                }
+            
+            # 只有 SR 成功，Gemini 失敗的情況
+            return {
+                "correct_options": [],
+                "heard": local_transcript,
+                "feedback": "未能辨識出正確句子，請再試一次。"
+            }
+    
+    # 全部失敗
+    return {
+        "correct_options": [],
+        "heard": ai_transcript if ai_transcript else "(無法辨識)",
+        "feedback": ai_feedback if ai_feedback else "系統忙碌或無法辨識。"
+    }
 
 def call_gemini_to_complete(words_text, course_name, course_date):
     if not words_text.strip(): return []
-    
-    # --- 修改點：讀取外部 MD 檔案 ---
-    prompt_file = "system_prompt.md"
-    if st.secrets.get("system_prompt"):
-        base_prompt = st.secrets["system_prompt"]
-    elif os.path.exists(prompt_file):
-        with open(prompt_file, "r", encoding="utf-8") as f:
-            base_prompt = f.read()
-    else:
-        # 備用 Prompt，防止檔案遺失導致程式崩潰
-        base_prompt = """
-You are a vocabulary organizing assistant.
-Requirements:
-1. Identify the main English word each line.
-2. If a line includes definitions or example sentences, CORRECT them if there are errors.
-3. If definitions (Chinese_1, Chinese_2), POS, or example sentences are MISSING, provide them.
-4. Ensure the Part of Speech (POS) in Traditional Chinese (e.g., 名詞, 動詞, 形容詞).
-5. Ensure the (Chinese_1, Chinese_2) in Traditional Chinese.
-6. Ensure the (Word, Example) in English.
-7. Output format MUST be strictly separated by a pipe symbol (|) for each line.
-8. Format: Word | POS | Chinese_1 | Chinese_2 | Example
-9. Do not output any header or markdown symbols, just the raw data lines.
-        """
-    
-    prompt = f"{base_prompt}\n\nInput words:\n{words_text}"
-    
+    prompt = f"Format: Word|POS|Chinese_1|Chinese_2|Example\nInput:\n{words_text}"
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, timeout=30)
