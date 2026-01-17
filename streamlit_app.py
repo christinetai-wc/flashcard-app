@@ -102,6 +102,14 @@ if "quiz_history" not in st.session_state:
     st.session_state.quiz_history = []
 if "audio_to_play" not in st.session_state:
     st.session_state.audio_to_play = None
+# 導航狀態管理
+if "nav_selection" not in st.session_state:
+    st.session_state.nav_selection = "學習儀表板"
+if "practice_filter_preset" not in st.session_state:
+    st.session_state.practice_filter_preset = None
+if "sentence_filter_preset" not in st.session_state:
+    st.session_state.sentence_filter_preset = None
+
 # 句型練習專用 State
 if "sentence_idx" not in st.session_state:
     st.session_state.sentence_idx = 0
@@ -489,7 +497,7 @@ def render_custom_progress_bar(label_left, green_pct, yellow_pct, empty_pct):
     """
     bar_html = f"""
     <div style="display: flex; align-items: center; margin-bottom: 8px;">
-        <div style="width: 180px; min-width: 180px; font-size: 0.9rem; margin-right: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{label_left}">
+        <div style="width: 40px; min-width: 40px; font-size: 0.9rem; margin-right: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{label_left}">
             {label_left}
         </div>
         <div style="flex-grow: 1; background-color: #e0e0e0; border-radius: 6px; height: 16px; display: flex; overflow: hidden;">
@@ -500,6 +508,21 @@ def render_custom_progress_bar(label_left, green_pct, yellow_pct, empty_pct):
     </div>
     """
     st.markdown(bar_html, unsafe_allow_html=True)
+
+# --- 導航用回調函式 ---
+def navigate_to_practice(preset):
+    st.session_state.practice_filter_preset = preset
+    st.session_state.nav_selection = "單字練習"
+    # 強制更新練習頁面的選單狀態
+    st.session_state["practice_filter"] = preset
+
+# --- 導航用回調函式 (句型) ---
+def navigate_to_sentence(book, cat):
+    preset = f"{book} | {cat}"
+    st.session_state.sentence_filter_preset = preset
+    st.session_state.nav_selection = "句型口說"
+    # 強制更新句型頁面的選單狀態
+    st.session_state["sentence_filter"] = preset
 
 def attempt_login():
     """處理登入的 Callback 函式"""
@@ -553,12 +576,45 @@ with st.sidebar:
         st.markdown(f"### 👤 {user['name']}")
         st.caption(f"學號: {user['id']}")
         st.divider()
-        menu = st.radio("功能選單", ["學習儀表板", "單字管理", "單字練習", "句型口說"])
+        # 綁定選單狀態至 nav_selection
+        menu =st.radio("功能選單", ["學習儀表板", "單字管理", "單字練習", "句型口說"], key="nav_selection")
         if st.button("登出", use_container_width=True):
             st.session_state.logged_in = False
             st.session_state.user_info = None
             st.session_state.u_vocab = []
             st.rerun()
+
+# --- 注入 CSS 以偽裝 Button 為純文字 ---
+st.markdown("""
+<style>
+/* 將 Expander 內的按鈕偽裝成純文字 */
+div[data-testid="stExpander"] button {
+    border: none !important;
+    background: transparent !important;
+    color: inherit !important;
+    text-decoration: none !important;
+    padding: 0px !important;
+    margin: 0px !important;
+    height: auto !important;
+    min-height: 0px !important;
+    line-height: normal !important;
+    font-size: 0.9rem !important;
+    cursor: pointer !important;
+    text-align: left !important;
+    display: inline-block !important;
+}
+
+div[data-testid="stExpander"] button:hover {
+    text-decoration: underline !important; /* 滑鼠移過時加底線作為提示 */
+    color: #555 !important;
+}
+
+div[data-testid="stExpander"] button:focus {
+    box-shadow: none !important;
+    outline: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 if not st.session_state.logged_in:
     st.title("🚀 歡迎使用 Flashcard Pro")
@@ -599,13 +655,17 @@ else:
                             p_learning = learning / total if total > 0 else 0
                             p_empty = 1 - p_mastered - p_learning
                             
-                            # 顯示堆疊進度條，移除右側文字
-                            render_custom_progress_bar(
-                                f"📅 {d} ({total}個)", 
-                                p_mastered, p_learning, p_empty
+                            c1, c2 = st.columns([2, 8])
+                            # 單字按鈕
+                            c1.button(
+                                f"📅 {d}", 
+                                key=f"btn_vocab_{course}_{d}",
+                                on_click=navigate_to_practice,
+                                kwargs={"preset": f"   📅 {course} | {d}"}
                             )
-            else:
-                st.info("尚無單字資料。")
+                            with c2:
+                                render_custom_progress_bar(f"({total}個)", p_mastered, p_learning, p_empty)
+            else: st.info("尚無單字資料。")
 
             st.divider()
 
@@ -650,10 +710,16 @@ else:
                             p_prog = cnt_progress / tot if tot > 0 else 0
                             p_empty = 1 - p_done - p_prog
                             
-                            render_custom_progress_bar(
-                                f"🏷️ {cat} ({tot}句)", 
-                                p_done, p_prog, p_empty
+                            c1, c2 = st.columns([2, 8])
+                            # 句型按鈕
+                            c1.button(
+                                f"🏷️ {cat}",
+                                key=f"btn_sent_{name}_{cat}",
+                                on_click=navigate_to_sentence,
+                                kwargs={"book": name, "cat": cat}
                             )
+                            with c2:
+                                render_custom_progress_bar(f"({tot}句)", p_done, p_prog, p_empty)
 
         # --- 單字 Tab ---
         with tab_v:
@@ -662,7 +728,18 @@ else:
                 if st.button("🔄 同步雲端"): sync_vocab_from_db(); st.rerun()
             else:
                 options = get_course_options(u_vocab)
-                selection = st.selectbox("單字篩選範圍：", options, key="vocab_dash_filter")
+                
+                # 從 session state 中讀取預設值
+                default_idx = 0
+                if st.session_state.practice_filter_preset in options:
+                    default_idx = options.index(st.session_state.practice_filter_preset)
+                
+                selection = st.selectbox("單字篩選範圍：", options, index=default_idx, key="vocab_dash_filter")
+                
+                # 使用後清除
+                if st.session_state.practice_filter_preset:
+                    st.session_state.practice_filter_preset = None
+                
                 filtered_vocab = filter_vocab_data(u_vocab, selection)
                 
                 col1, col2, col3 = st.columns(3)
@@ -708,10 +785,18 @@ else:
                             cats = sorted(df_b['Category'].unique())
                             for c in cats:
                                 combined_s_options.append(f"{name} | {c}")
+                 
+                # 接收導航預設值
+                default_idx = 0
+                if st.session_state.sentence_filter_preset in combined_s_options:
+                    default_idx = combined_s_options.index(st.session_state.sentence_filter_preset)
                 
                 s_selection = st.selectbox("句型篩選範圍：", combined_s_options, key="sentence_dash_filter")
                 
-                # 獲取篩選後的句型資料
+                # 清除預設
+                if st.session_state.sentence_filter_preset:
+                    st.session_state.sentence_filter_preset = None
+
                 if " (全部)" in s_selection:
                     book_name = s_selection.replace(" (全部)", "")
                     target_id = book_map.get(book_name)
@@ -873,7 +958,18 @@ else:
     elif menu == "單字練習":
         st.title("✏️ 單字練習")
         options = get_course_options(u_vocab)
-        selection = st.selectbox("🎯 選擇練習範圍：", options, key="practice_filter")
+        
+        # 檢查是否有來自儀表板的預設篩選值
+        default_idx = 0
+        if st.session_state.practice_filter_preset in options:
+            default_idx = options.index(st.session_state.practice_filter_preset)
+        
+        selection = st.selectbox("🎯 選擇練習範圍：", options, index=default_idx, key="practice_filter")
+        
+        # 清除預設值，以免卡住
+        if st.session_state.practice_filter_preset:
+            st.session_state.practice_filter_preset = None
+            
         current_set = filter_vocab_data(u_vocab, selection)
         
         tab_p, tab_t = st.tabs(["快閃練習", "實力測驗"])
@@ -976,8 +1072,12 @@ else:
                         for c in cats:
                             combined_options.append(f"{name} | {c}")
             
-            selection = st.selectbox("選擇練習範圍：", combined_options)
-            
+            default_idx = 0
+            if st.session_state.sentence_filter_preset in combined_options:
+                default_idx = combined_options.index(st.session_state.sentence_filter_preset)
+            selection = st.selectbox("選擇練習範圍：", combined_options, index=default_idx, key="sentence_filter")
+            if st.session_state.sentence_filter_preset: st.session_state.sentence_filter_preset = None
+
             if " (全部)" in selection:
                 book_name = selection.replace(" (全部)", "")
                 target_id = book_map.get(book_name)
