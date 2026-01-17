@@ -270,6 +270,8 @@ def update_user_stats_summary(dataset_id):
         }
     }
     user_ref.update(stats_data)
+    # 清除快取，確保排行榜更新
+    fetch_users_list.clear()
 
 def save_user_sentence_progress(template_str, completed_list, dataset_id=None):
     """儲存使用者對某句型的練習進度，並標記來源題庫 ID"""
@@ -797,7 +799,12 @@ if not st.session_state.logged_in:
     st.info("請登入以開始練習。預設密碼 1234。")
     
     st.divider()
-    st.subheader("🏆 全班句型練習排行榜")
+    
+    c_title, c_refresh = st.columns([8, 2])
+    c_title.subheader("🏆 全班句型練習排行榜")
+    if c_refresh.button("🔄 刷新數據"):
+        st.cache_data.clear()
+        st.rerun()
     
     # 讀取排行榜數據
     all_users = fetch_users_list()
