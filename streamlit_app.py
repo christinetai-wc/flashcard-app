@@ -878,7 +878,7 @@ if not st.session_state.logged_in:
                 "學生": u_data.get('name', uid),
                 "句型書": stat.get('name', book_id),
                 "進度": f"{completed}/{total}",
-                "完成率": rate,
+                "完成率": rate * 100, # 改成百分比數值
                 "最後更新": last_active_str
             })
     
@@ -892,9 +892,9 @@ if not st.session_state.logged_in:
                 "完成率": st.column_config.ProgressColumn(
                     "完成率",
                     help="已完成句數比例",
-                    format="%.0f%%",
+                    format="%.1f%%", # 改成 %.1f%% 顯示小數點
                     min_value=0,
-                    max_value=1,
+                    max_value=100, # 改成 100
                 )
             },
             use_container_width=True,
