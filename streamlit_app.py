@@ -321,6 +321,26 @@ def clear_user_sentence_history(target_dataset_id=None):
             count = 0
     if count > 0:
         batch.commit()
+        
+    # 清除後更新統計 (歸零)
+    if target_dataset_id and st.session_state.current_user_name:
+         user_ref = db.collection(USER_LIST_PATH).document(st.session_state.current_user_name)
+         catalogs = fetch_sentence_catalogs()
+         dataset_name = catalogs.get(target_dataset_id, target_dataset_id)
+         sentences = fetch_sentences_by_id(target_dataset_id)
+         
+         stats_data = {
+            f"sentence_stats.{target_dataset_id}": {
+                "name": dataset_name,
+                "total": len(sentences),
+                "completed": 0,
+                "in_progress": 0,
+                "last_active": firestore.SERVER_TIMESTAMP
+            }
+        }
+         user_ref.update(stats_data)
+         fetch_users_list.clear() # 清除快取
+        
     return deleted_count
 
 # --- 5. AI 與 JS 工具 ---
