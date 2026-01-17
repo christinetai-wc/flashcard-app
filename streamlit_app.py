@@ -505,7 +505,32 @@ def check_audio_batch(audio_file, template, options_list):
 
 def call_gemini_to_complete(words_text, course_name, course_date):
     if not words_text.strip(): return []
-    prompt = f"Format: Word|POS|Chinese_1|Chinese_2|Example\nInput:\n{words_text}"
+    
+    # --- 修改點：讀取外部 MD 檔案 ---
+    prompt_file = "system_prompt.md"
+    if st.secrets.get("system_prompt"):
+        base_prompt = st.secrets["system_prompt"]
+    elif os.path.exists(prompt_file):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            base_prompt = f.read()
+    else:
+        # 備用 Prompt，防止檔案遺失導致程式崩潰
+        base_prompt = """
+You are a vocabulary organizing assistant.
+Requirements:
+1. Identify the main English word each line.
+2. If a line includes definitions or example sentences, CORRECT them if there are errors.
+3. If definitions (Chinese_1, Chinese_2), POS, or example sentences are MISSING, provide them.
+4. Ensure the Part of Speech (POS) in Traditional Chinese (e.g., 名詞, 動詞, 形容詞).
+5. Ensure the (Chinese_1, Chinese_2) in Traditional Chinese.
+6. Ensure the (Word, Example) in English.
+7. Output format MUST be strictly separated by a pipe symbol (|) for each line.
+8. Format: Word | POS | Chinese_1 | Chinese_2 | Example
+9. Do not output any header or markdown symbols, just the raw data lines.
+        """
+    
+    prompt = f"{base_prompt}\n\nInput words:\n{words_text}"
+
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, timeout=30)
