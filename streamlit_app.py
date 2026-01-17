@@ -588,6 +588,7 @@ def attempt_login():
         user_record = users_db[selected_name]
         if hash_password(input_password) == user_record["password"]:
             st.session_state.logged_in = True
+            st.session_state.current_user_name = selected_name
             st.session_state.user_info = user_record
             st.session_state.login_error = None
             sync_vocab_from_db(init_if_empty=True)
@@ -637,12 +638,40 @@ with st.sidebar:
             st.session_state.user_info = None
             st.session_state.u_vocab = []
             st.rerun()
+        
+        # --- 新增：修改密碼 Expander ---
+        with st.expander("🔐 修改密碼"):
+            with st.form("change_pwd_form"):
+                curr_pwd = st.text_input("目前密碼", type="password")
+                new_pwd = st.text_input("新密碼", type="password")
+                conf_pwd = st.text_input("確認新密碼", type="password")
+                
+                if st.form_submit_button("確認修改"):
+                    if hash_password(curr_pwd) != st.session_state.user_info['password']:
+                        st.error("目前密碼錯誤。")
+                    elif new_pwd != conf_pwd:
+                        st.error("兩次新密碼輸入不一致。")
+                    elif not new_pwd:
+                        st.error("新密碼不能為空。")
+                    else:
+                        # Update Firestore
+                        new_hash = hash_password(new_pwd)
+                        user_ref = db.collection(USER_LIST_PATH).document(st.session_state.current_user_name)
+                        user_ref.update({"password": new_hash})
+                        
+                        # Update Session State
+                        st.session_state.user_info['password'] = new_hash
+                        # 清除使用者列表快取，確保下次登入能讀取到新密碼
+                        fetch_users_list.clear()
+                        
+                        st.success("密碼修改成功！")
+                        time.sleep(1)
 
-# --- 注入 CSS 以偽裝 Button 為純文字 ---
+# --- 注入 CSS 以偽裝 Button 為純文字 (加強版) ---
 st.markdown("""
 <style>
 /* 將 Expander 內的按鈕偽裝成純文字 */
-div[data-testid="stExpander"] button {
+div[data-testid="stExpander"] [data-testid="stButton"] button {
     border: none !important;
     background: transparent !important;
     color: inherit !important;
