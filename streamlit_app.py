@@ -844,62 +844,81 @@ if not st.session_state.logged_in:
     st.info("請登入以開始練習。預設密碼 1234。")
     
     st.divider()
-    
+
     c_title, c_refresh = st.columns([8, 2])
     c_title.subheader("🏆 全班句型練習排行榜")
     if c_refresh.button("🔄 刷新數據"):
         st.cache_data.clear()
         st.rerun()
-    
-    # 讀取排行榜數據
+
+    # 讀取排行榜數據，按句型書分組
     all_users = fetch_users_list()
-    leaderboard_items = []
-    
+
+    # 結構: { book_name: [ {學生, completed, total, rate, last_active}, ... ] }
+    books_data = {}
+
     for uid, u_data in all_users.items():
         s_stats = u_data.get("sentence_stats", {})
         if not s_stats: continue
-            
+
         for book_id, stat in s_stats.items():
             if not isinstance(stat, dict): continue
             total = stat.get('total', 0)
             if total == 0: continue
-            
+
             completed = stat.get('completed', 0)
-            rate = completed / total
-            
+            book_name = stat.get('name', book_id)
+
             # 將 Timestamp 轉換為字串
             last_active = stat.get('last_active')
             if hasattr(last_active, 'date'):
                 last_active_str = last_active.strftime("%m-%d %H:%M")
             else:
-                last_active_str = str(last_active)
+                last_active_str = str(last_active) if last_active else ""
 
-            leaderboard_items.append({
-                "學生": u_data.get('name', uid),
-                "句型書": stat.get('name', book_id),
-                "進度": f"{completed}/{total}",
-                "完成率": rate * 100, # 改成百分比數值
-                "最後更新": last_active_str
+            if book_name not in books_data:
+                books_data[book_name] = []
+
+            books_data[book_name].append({
+                "student": u_data.get('name', uid),
+                "completed": completed,
+                "total": total,
+                "rate": completed / total if total > 0 else 0,
+                "last_active": last_active_str
             })
-    
-    if leaderboard_items:
-        df_lb = pd.DataFrame(leaderboard_items)
-        df_lb = df_lb.sort_values(by=["完成率", "最後更新"], ascending=[False, False])
-        
-        st.dataframe(
-            df_lb,
-            column_config={
-                "完成率": st.column_config.ProgressColumn(
-                    "完成率",
-                    help="已完成句數比例",
-                    format="%.1f%%", # 改成 %.1f%% 顯示小數點
-                    min_value=0,
-                    max_value=100, # 改成 100
-                )
-            },
-            use_container_width=True,
-            hide_index=True
-        )
+
+    if books_data:
+        for book_name, students in books_data.items():
+            # 按完成率排序（高到低）
+            students_sorted = sorted(students, key=lambda x: (-x['rate'], -x['completed']))
+
+            st.markdown(f"#### 📘 {book_name}")
+
+            for rank, s in enumerate(students_sorted, 1):
+                pct = int(s['rate'] * 100)
+                # 前三名使用獎牌 emoji
+                if rank == 1:
+                    rank_display = "🥇"
+                elif rank == 2:
+                    rank_display = "🥈"
+                elif rank == 3:
+                    rank_display = "🥉"
+                else:
+                    rank_display = f"{rank}."
+
+                bar_html = f"""
+                <div style="display: flex; align-items: center; margin-bottom: 6px; font-size: 0.9rem;">
+                    <div style="width: 80px; min-width: 80px;">{rank_display} {s['student']}</div>
+                    <div style="flex-grow: 1; background-color: #e0e0e0; border-radius: 6px; height: 14px; margin: 0 10px; overflow: hidden;">
+                        <div style="width: {pct}%; background-color: #4CAF50; height: 100%;"></div>
+                    </div>
+                    <div style="width: 60px; min-width: 60px; text-align: right;">{s['completed']}/{s['total']}</div>
+                    <div style="width: 90px; min-width: 90px; text-align: right; color: #888; font-size: 0.8rem;">{s['last_active']}</div>
+                </div>
+                """
+                st.markdown(bar_html, unsafe_allow_html=True)
+
+            st.write("")  # 間隔
     else:
         st.info("目前還沒有人開始練習句型，快登入成為第一名！")
 
