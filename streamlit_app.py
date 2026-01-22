@@ -299,19 +299,20 @@ def clear_user_sentence_history(target_dataset_id=None):
     如果指定了 target_dataset_id，只清除該題庫的紀錄。
     """
     path = get_sentence_progress_path()
-    if not db or not path: return
-    # 批次刪除
+    if not db or not path: return 0
+
+    # 批次刪除 sentence_progress
     docs = db.collection(path).stream()
     batch = db.batch()
     count = 0
     deleted_count = 0
-    
+
     for d in docs:
         doc_data = d.to_dict()
         # 如果指定了題庫ID，且該記錄不屬於此題庫，則跳過
         if target_dataset_id and doc_data.get("dataset_id") != target_dataset_id:
             continue
-            
+
         batch.delete(d.reference)
         count += 1
         deleted_count += 1
@@ -321,26 +322,23 @@ def clear_user_sentence_history(target_dataset_id=None):
             count = 0
     if count > 0:
         batch.commit()
-        
-    # 清除後更新統計 (歸零)
-    if target_dataset_id and st.session_state.current_user_name:
-         user_ref = db.collection(USER_LIST_PATH).document(st.session_state.current_user_name)
-         catalogs = fetch_sentence_catalogs()
-         dataset_name = catalogs.get(target_dataset_id, target_dataset_id)
-         sentences = fetch_sentences_by_id(target_dataset_id)
-         
-         stats_data = {
-            f"sentence_stats.{target_dataset_id}": {
-                "name": dataset_name,
-                "total": len(sentences),
-                "completed": 0,
-                "in_progress": 0,
-                "last_active": firestore.SERVER_TIMESTAMP
-            }
-        }
-         user_ref.update(stats_data)
-         fetch_users_list.clear() # 清除快取
-        
+
+    # 清除 users 文件中的 sentence_stats
+    user_name = st.session_state.get("current_user_name")
+    if user_name:
+        user_ref = db.collection(USER_LIST_PATH).document(user_name)
+        if target_dataset_id:
+            # 只刪除特定題庫的統計
+            user_ref.update({
+                f"sentence_stats.{target_dataset_id}": firestore.DELETE_FIELD
+            })
+        else:
+            # 刪除所有 sentence_stats
+            user_ref.update({
+                "sentence_stats": firestore.DELETE_FIELD
+            })
+        fetch_users_list.clear()  # 清除快取
+
     return deleted_count
 
 # --- 5. AI 與 JS 工具 ---
