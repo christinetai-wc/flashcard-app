@@ -738,7 +738,9 @@ def attempt_login():
 # --- 7. UI 介面 ---
 
 with st.sidebar:
-    st.title("🧠 Flashcard Pro")
+    col_icon, col_title = st.columns([1, 4])
+    col_icon.image("app-icon.png", width=40)
+    col_title.markdown("### Flashcard Pro")
     users_db = fetch_users_list()
     # 暫存使用者名單以供 callback 使用
     st.session_state.users_db_cache = users_db
@@ -804,12 +806,6 @@ with st.sidebar:
                         
                         st.success("密碼修改成功！")
                         time.sleep(1)
-
-# --- 注入 apple-touch-icon (iOS 主畫面圖示) ---
-st.markdown('''
-<link rel="apple-touch-icon" href="app-icon.png">
-<link rel="apple-touch-icon" sizes="180x180" href="app-icon.png">
-''', unsafe_allow_html=True)
 
 # --- 注入 CSS 以偽裝 Button 為純文字 (加強版) ---
 st.markdown("""
