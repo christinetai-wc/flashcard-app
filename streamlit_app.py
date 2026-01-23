@@ -1140,7 +1140,7 @@ else:
         tab1, tab2, tab3, tab4 = st.tabs(["批次輸入", "手動修改", "單字刪除", "📂 CSV 匯入"])
         
         with tab1:
-            c_name = st.text_input("課程名稱:", value="新課程")
+            c_name = st.text_input("課程名稱:", value="Sophie數學Cherie英文")
             c_date = st.date_input("日期:", value=date.today())
             text_area = st.text_area("輸入內容:")
             if st.button("啟動 AI 處理"):
