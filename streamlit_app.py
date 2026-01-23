@@ -20,7 +20,7 @@ except ImportError:
     sr = None
 
 # --- 0. 設定與常數 ---
-st.set_page_config(page_title="Flashcard Pro 雲端版", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="Flashcard Pro 雲端版", page_icon="✨", layout="wide")
 
 # 讀取 Secrets
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
@@ -738,7 +738,7 @@ def attempt_login():
 # --- 7. UI 介面 ---
 
 with st.sidebar:
-    st.title("🧠 Flashcard Pro")
+    st.title("✨ Flashcard Pro")
     users_db = fetch_users_list()
     # 暫存使用者名單以供 callback 使用
     st.session_state.users_db_cache = users_db
