@@ -1163,7 +1163,7 @@ else:
                 c_name = st.text_input("課程名稱:", key="new_course_name")
 
             c_date = st.date_input("日期:", value=date.today())
-            text_area = st.text_area("輸入內容:")
+            text_area = st.text_area("輸入內容:", height=150)
             if st.button("啟動 AI 處理"):
                 with st.spinner("解析中..."):
                     st.session_state.pending_items = call_gemini_to_complete(text_area, c_name, c_date)
