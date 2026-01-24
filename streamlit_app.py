@@ -1140,7 +1140,28 @@ else:
         tab1, tab2, tab3, tab4 = st.tabs(["批次輸入", "手動修改", "單字刪除", "📂 CSV 匯入"])
         
         with tab1:
-            c_name = st.text_input("課程名稱:", value="Sophie數學Cherie英文")
+            # 取得之前用過的課程名稱
+            existing_courses = []
+            if u_vocab:
+                df_courses = pd.DataFrame(u_vocab)
+                if 'Course' in df_courses.columns:
+                    existing_courses = sorted(df_courses['Course'].dropna().unique().tolist())
+
+            # 加入「新增課程...」選項
+            if existing_courses:
+                # 有現有課程時，預設選第一個課程
+                course_options = existing_courses + ["➕ 新增課程..."]
+                selected_course = st.selectbox("課程名稱:", course_options, key="batch_course_select")
+
+                # 如果選擇新增課程，顯示輸入框
+                if selected_course == "➕ 新增課程...":
+                    c_name = st.text_input("輸入新課程名稱:", key="new_course_name")
+                else:
+                    c_name = selected_course
+            else:
+                # 沒有現有課程時，直接輸入
+                c_name = st.text_input("課程名稱:", key="new_course_name")
+
             c_date = st.date_input("日期:", value=date.today())
             text_area = st.text_area("輸入內容:")
             if st.button("啟動 AI 處理"):
