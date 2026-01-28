@@ -12,6 +12,7 @@ from datetime import date
 from google.cloud import firestore
 from google.oauth2 import service_account
 from streamlit.components.v1 import html
+from streamlit_cookies_controller import CookieController
 
 # --- 新增：嘗試匯入 SpeechRecognition (保留供其他用途，但主功能改用 Gemini Audio) ---
 try:
@@ -53,6 +54,7 @@ def get_db():
         return None
 
 db = get_db()
+cookie_controller = CookieController()
 APP_ID = st.secrets.get("APP_ID", "flashcard-pro-v1")
 USER_LIST_PATH = f"artifacts/{APP_ID}/public/data/users"
 SENTENCE_CATALOG_PATH = f"artifacts/{APP_ID}/public/data/sentences"
@@ -721,7 +723,7 @@ def attempt_login():
     selected_name = st.session_state.login_user_name
     input_password = st.session_state.login_password
     users_db = st.session_state.users_db_cache
-    
+
     if selected_name != "請選擇..." and input_password:
         user_record = users_db[selected_name]
         if hash_password(input_password) == user_record["password"]:
@@ -730,6 +732,9 @@ def attempt_login():
             st.session_state.user_info = user_record
             st.session_state.login_error = None
             sync_vocab_from_db(init_if_empty=True)
+            # 記住登入資訊到 Cookie (30 天有效)
+            cookie_controller.set("remembered_user", selected_name, max_age=30*24*60*60)
+            cookie_controller.set("remembered_pwd", input_password, max_age=30*24*60*60)
         else:
             st.session_state.login_error = "密碼錯誤。"
     else:
@@ -745,20 +750,30 @@ with st.sidebar:
     
     if not st.session_state.logged_in:
         st.subheader("🔑 學生登入")
-        
+
+        # 讀取 Cookie 預填登入資訊
+        remembered_user = cookie_controller.get("remembered_user")
+        remembered_pwd = cookie_controller.get("remembered_pwd")
+
+        # 計算預設選項 index
+        user_list = ["請選擇..."] + list(users_db.keys())
+        default_idx = user_list.index(remembered_user) if remembered_user in user_list else 0
+
         st.selectbox(
-            "請選擇使用者", 
-            ["請選擇..."] + list(users_db.keys()),
+            "請選擇使用者",
+            user_list,
+            index=default_idx,
             key="login_user_name"
         )
-        
+
         st.text_input(
-            "輸入密碼", 
+            "輸入密碼",
             type="password",
+            value=remembered_pwd or "",
             key="login_password",
             on_change=attempt_login
         )
-        
+
         st.button("登入", on_click=attempt_login, use_container_width=True)
         
         if st.session_state.get("login_error"):
@@ -772,6 +787,9 @@ with st.sidebar:
         # 綁定選單狀態至 nav_selection
         menu =st.radio("功能選單", ["學習儀表板", "單字管理", "單字練習", "句型口說"], key="nav_selection")
         if st.button("登出", use_container_width=True):
+            # 清除記住的登入資訊 Cookie
+            cookie_controller.remove("remembered_user")
+            cookie_controller.remove("remembered_pwd")
             st.session_state.logged_in = False
             st.session_state.user_info = None
             st.session_state.u_vocab = []

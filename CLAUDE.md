@@ -4,6 +4,7 @@
 
 ### 1. 使用者管理
 - **登入/登出系統**：基於 Firestore 的使用者認證，支援密碼加密 (SHA-256)
+- **記住登入資訊**：使用 `streamlit-cookies-controller` 將使用者名稱和密碼存入瀏覽器 Cookie（有效期 30 天），下次開啟網頁自動預填
 - **密碼修改**：使用者可在側邊欄修改自己的密碼
 - **多使用者隔離**：每個使用者有獨立的資料路徑 (`users/{uid}/`)
 
@@ -144,12 +145,12 @@ artifacts/
 
 | 模組區塊 | 行號範圍 | 職責 |
 |----------|----------|------|
-| 設定與常數 | 1-60 | 初始化、API 設定、Firestore 連線 |
+| 設定與常數 | 1-60 | 初始化、API 設定、Firestore 連線、Cookie Controller |
 | 工具函式 | 61-121 | 雜湊、使用者列表取得、初始化 |
 | 資料庫操作 | 123-343 | CRUD 函式（單字、句型、進度） |
 | AI 與 JS 工具 | 344-718 | Gemini 呼叫、TTS、鍵盤橋接 |
-| 登入回調 | 719-736 | 處理登入邏輯 |
-| UI 介面 | 738-1489 | Sidebar + 主要頁面渲染 |
+| 登入回調 | 719-740 | 處理登入邏輯、儲存 Cookie |
+| UI 介面 | 741-1489 | Sidebar（含 Cookie 預填）+ 主要頁面渲染 |
 
 ---
 
@@ -316,12 +317,13 @@ sorted(students, key=lambda x: (-x['rate'], -x['completed']))
 ### Python 套件
 
 ```
-streamlit           # Web 框架
-pandas              # 資料處理
-google-cloud-firestore  # Firestore SDK
-google-oauth2-tool  # 認證
-requests            # HTTP 請求
-SpeechRecognition   # 本地語音辨識 (optional)
+streamlit                    # Web 框架
+streamlit-cookies-controller # 瀏覽器 Cookie 管理（記住登入）
+pandas                       # 資料處理
+google-cloud-firestore       # Firestore SDK
+google-auth                  # Google 認證
+requests                     # HTTP 請求
+SpeechRecognition            # 本地語音辨識 (optional)
 ```
 
 ### 外部服務
