@@ -8,6 +8,7 @@ import hashlib
 import os
 import base64
 import string
+import re
 from datetime import date
 from google.cloud import firestore
 from google.oauth2 import service_account
@@ -608,6 +609,18 @@ def filter_vocab_data(vocab, selection):
             course_date = parts[1].strip()
             return df[(df['Course'] == course_name) & (df['Date'] == course_date)].to_dict('records')
     return vocab
+
+def sample_by_accuracy(vocab_list, count):
+    """按正確率由低到高排序後抽取指定數量的單字（正確率低的優先）"""
+    def get_accuracy(w):
+        total = int(w.get('Total', 0))
+        correct = int(w.get('Correct', 0))
+        if total == 0:
+            return -1  # 未練習過的優先（排最前）
+        return correct / total
+
+    sorted_list = sorted(vocab_list, key=get_accuracy)
+    return sorted_list[:count]
 
 def get_sentence_category_options(sentences, catalog_name):
     if not sentences: return [f"📚 {catalog_name} (全部)"]
@@ -1294,7 +1307,7 @@ else:
         
         current_set = filter_vocab_data(u_vocab, selection)
         
-        tab_p, tab_t = st.tabs(["快閃練習", "實力測驗"])
+        tab_p, tab_t, tab_m = st.tabs(["快閃練習", "實力測驗", "例句連連看"])
         
         with tab_p:
             if not current_set: st.info("範圍內無單字。")
@@ -1344,7 +1357,8 @@ else:
             if not current_set: st.info("範圍內無單字。")
             else:
                 if "test_pool" not in st.session_state or st.button("換一批題目"):
-                    st.session_state.test_pool = random.sample(current_set, min(10, len(current_set)))
+                    # 按正確率由低到高抽題（正確率低的優先）
+                    st.session_state.test_pool = sample_by_accuracy(current_set, min(10, len(current_set)))
                     st.session_state.t_idx = 0; st.session_state.t_score = 0; st.session_state.quiz_history = []
                     st.rerun()
                 
@@ -1368,6 +1382,100 @@ else:
                     if not wrongs.empty:
                         st.subheader("❌ 錯誤回顧")
                         st.table(wrongs[["英文", "你的輸入", "正確答案"]])
+
+        with tab_m:
+            st.subheader("🔗 例句連連看")
+
+            # 篩選有例句的單字
+            words_with_example = [w for w in current_set if w.get('Example') and w.get('English')]
+
+            if len(words_with_example) < 6:
+                st.warning("需要至少 6 個有例句的單字才能進行此測驗")
+            else:
+                # 初始化或換題
+                if "match_pool" not in st.session_state or st.button("🔄 換一批題目", key="match_refresh"):
+                    # 按正確率由低到高抽題（正確率低的優先）
+                    selected = sample_by_accuracy(words_with_example, 5)
+
+                    # 產生干擾選項（從其他單字中隨機選一個）
+                    other_words = [w for w in words_with_example if w not in selected]
+                    decoy = random.choice(other_words)['English'] if other_words else "unknown"
+
+                    # 打亂選項順序
+                    options = [w['English'] for w in selected] + [decoy]
+                    random.shuffle(options)
+
+                    # 建立題目（例句挖空）
+                    questions = []
+                    for w in selected:
+                        example = w['Example']
+                        english = w['English']
+                        # 將單字替換為 ___（不區分大小寫）
+                        blanked = re.sub(re.escape(english), "______", example, flags=re.IGNORECASE)
+                        questions.append({
+                            "blanked": blanked,
+                            "answer": english,
+                            "original": example,
+                            "id": w.get('id')
+                        })
+
+                    st.session_state.match_pool = questions
+                    st.session_state.match_options = options
+                    st.session_state.match_submitted = False
+                    st.rerun()
+
+                # 顯示選項
+                st.info(f"**選項：** {' ・ '.join(st.session_state.match_options)}")
+
+                # 顯示題目（使用 form 確保同時提交）
+                with st.form("match_form"):
+                    user_answers = []
+                    for i, q in enumerate(st.session_state.match_pool):
+                        col1, col2 = st.columns([3, 1])
+                        col1.markdown(f"**{i+1}.** {q['blanked']}")
+                        ans = col2.selectbox(
+                            f"選擇答案 {i+1}",
+                            ["請選擇..."] + st.session_state.match_options,
+                            key=f"match_ans_{i}",
+                            label_visibility="collapsed"
+                        )
+                        user_answers.append(ans)
+
+                    if st.form_submit_button("✅ 提交答案", use_container_width=True):
+                        st.session_state.match_submitted = True
+                        st.session_state.match_user_answers = user_answers
+
+                        # 計算結果並更新資料庫
+                        results = []
+                        for i, q in enumerate(st.session_state.match_pool):
+                            user_ans = user_answers[i]
+                            is_correct = user_ans.lower() == q['answer'].lower()
+                            results.append(is_correct)
+                            # 更新單字的 Correct/Total
+                            if q.get('id'):
+                                word_data = next((w for w in current_set if w.get('id') == q['id']), None)
+                                if word_data:
+                                    update_word_data(q['id'], {
+                                        "Correct": int(word_data.get('Correct', 0)) + (1 if is_correct else 0),
+                                        "Total": int(word_data.get('Total', 0)) + 1
+                                    })
+                        st.session_state.match_results = results
+                        st.rerun()
+
+                # 顯示結果
+                if st.session_state.get("match_submitted"):
+                    correct_count = 0
+                    st.divider()
+                    for i, q in enumerate(st.session_state.match_pool):
+                        user_ans = st.session_state.match_user_answers[i]
+                        is_correct = st.session_state.match_results[i]
+                        if is_correct:
+                            correct_count += 1
+                            st.success(f"✅ {q['original']}")
+                        else:
+                            st.error(f"❌ {q['blanked'].replace('______', f'**{user_ans}**')} → 正確：**{q['answer']}**")
+
+                    st.metric("得分", f"{correct_count} / 5")
 
     elif menu == "句型口說":
         st.title("🗣️ 句型口說挑戰")
