@@ -3,10 +3,17 @@
 ## 核心功能
 
 ### 1. 使用者管理
-- **登入/登出系統**：基於 Firestore 的使用者認證，支援密碼加密 (SHA-256)
+- **登入/登出系統**：基於 Firestore 的使用者認證，支援密碼加密 (SHA-256)，登入採直接輸入名稱（非下拉選單）
+- **自助註冊**：新用戶可在登入頁面自行註冊（填寫名稱+密碼），學號自動產生（S+3位數字，從現有最大編號遞增，排除 S999 測試帳號），顏色隨機指定
+- **7天免費試用**：新註冊用戶自動獲得 7 天 Premium 試用（`plan="premium"`, `plan_expiry=+7天`, `plan_note="7-day free trial"`），到期後自動降為 free
 - **記住登入資訊**：使用 `streamlit-cookies-controller` 將使用者名稱和密碼存入瀏覽器 Cookie（有效期 30 天），下次開啟網頁自動預填
 - **密碼修改**：使用者可在側邊欄修改自己的密碼
 - **多使用者隔離**：每個使用者有獨立的資料路徑 (`users/{uid}/`)
+- **訂閱方案 (Premium)**：
+  - 免費方案 (free)：單字 AI 補全每日 3 次、每次最多 100 行；語音辨識不限次數但記錄使用量；付費句型書鎖定
+  - 付費方案 (premium)：所有 AI 功能無限制，所有句型書全部開放
+  - 管理員透過 admin_app.py 手動開通/取消，支援天數選擇與到期日自動延長
+  - 側邊欄顯示方案狀態與剩餘額度（試用中顯示到期日）
 
 ### 2. 單字學習
 - **單字庫管理**：
@@ -15,11 +22,11 @@
   - CSV 匯入：支援從 CSV 檔案批次匯入
   - 單字刪除：支援全選批次刪除
 - **快閃練習**：卡片式翻面練習，支援鍵盤快捷鍵（方向鍵切換、空白鍵翻面）
-- **實力測驗**：隨機抽題測驗中文，記錄答對/答錯次數
-- **例句連連看**：抽 5 個單字例句挖空，提供 6 個選項（含 1 干擾項）做配對，記錄 Correct/Total
+- **實力測驗**：抽題測驗中文，記錄答對/答錯次數，優先抽正確率低的單字
+- **例句連連看**：抽 5 個單字例句挖空，提供 6 個選項（含 1 干擾項）做配對，記錄 Correct/Total，優先抽正確率低的單字
 
 ### 3. 句型口說練習
-- **題庫系統**：支援多本句型書，每本有多個分類
+- **題庫系統**：支援多本句型書，每本有多個分類；支援付費/免費標記（`is_premium`），免費用戶無法存取付費句型書
 - **語音辨識**：
   - 主要：Gemini 多模態 API（直接處理音訊）
   - 備援：Google Speech Recognition (本地)
@@ -27,10 +34,10 @@
 - **智慧跳轉**：切換題庫時自動跳到第一個未完成的題目
 
 ### 4. 學習儀表板
-- **學習戰績表**：堆疊進度條顯示各課程/分類的完成狀態（綠=已完成、黃=進行中、灰=未開始）
+- **個人戰績表**：堆疊進度條顯示各課程/分類的完成狀態（綠=已完成、黃=進行中、灰=未開始）
 - **單字統計**：覆蓋率、正確率等指標
 - **句型統計**：完成率、進度表格
-- **排行榜**：未登入時顯示全班句型練習排行榜（按完成率排序）
+- **排行榜**：登入後儀表板內獨立 tab「🏆 全班排行榜」，按句型書分組、完成率排序，含刷新按鈕
 
 ### 5. 文字轉語音 (TTS)
 - 使用瀏覽器原生 Web Speech API
@@ -50,7 +57,7 @@ artifacts/
     │       ├── users/              # 使用者列表
     │       │   └── {user_name}/    # 文件 ID = 使用者名稱
     │       ├── sentences/          # 句型題庫目錄
-    │       │   └── {dataset_id}/   # 題庫 metadata
+    │       │   └── {dataset_id}/   # 題庫 metadata (含 is_premium 欄位)
     │       └── {dataset_id}/       # 句型題目內容
     │           └── {doc_id}/       # 單一句型題目
     └── users/
@@ -85,6 +92,15 @@ artifacts/
 | Order | int | 排序編號 |
 | Timestamp | timestamp | 建立時間 |
 
+### 句型題庫目錄 (Sentence Catalog) 資料結構
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| id | string | 題庫 ID (= Document ID) |
+| name | string | 顯示名稱 |
+| is_premium | bool | 是否為付費 Premium 專屬（預設 `false`） |
+| last_updated | timestamp | 最後更新時間 |
+
 ### 使用者 (User) 資料結構
 
 | 欄位 | 類型 | 說明 |
@@ -94,6 +110,10 @@ artifacts/
 | password | string | SHA-256 雜湊後的密碼 |
 | color | string | 使用者代表色 |
 | sentence_stats | map | 句型練習統計（按題庫 ID 分組） |
+| plan | string | 訂閱方案：`"free"` 或 `"premium"`（預設 `"free"`） |
+| plan_expiry | timestamp | Premium 到期日，過期後自動視為 free |
+| plan_note | string | 管理員備註（如收款紀錄） |
+| ai_usage | map | AI token 使用量，格式：`{"speech": {"2026-03-01": 850}, "vocab": {"2026-03-01": 1200}}`，從 Gemini API `usageMetadata.totalTokenCount` 取得 |
 
 ### 句型進度 (Sentence Progress) 資料結構
 
@@ -144,14 +164,14 @@ artifacts/
 
 ### 主要模組職責
 
-| 模組區塊 | 行號範圍 | 職責 |
+| 模組區塊 | 行號範圍（約略） | 職責 |
 |----------|----------|------|
-| 設定與常數 | 1-60 | 初始化、API 設定、Firestore 連線、Cookie Controller |
-| 工具函式 | 61-121 | 雜湊、使用者列表取得、初始化 |
-| 資料庫操作 | 123-343 | CRUD 函式（單字、句型、進度） |
-| AI 與 JS 工具 | 344-718 | Gemini 呼叫、TTS、鍵盤橋接 |
-| 登入回調 | 719-740 | 處理登入邏輯、儲存 Cookie |
-| UI 介面 | 741-1489 | Sidebar（含 Cookie 預填）+ 主要頁面渲染 |
+| 設定與常數 | 1-66 | 初始化、API 設定、Firestore 連線、Cookie Controller、免費方案限制常數 |
+| 工具函式 | 67-140 | 雜湊、使用者列表取得、初始化、`is_premium()`、`check_vocab_ai_usage()`、`record_ai_usage()`、`register_new_user()` |
+| 資料庫操作 | 141-390 | CRUD 函式（單字、句型、進度） |
+| AI 與 JS 工具 | 391-770 | Gemini 呼叫、TTS、鍵盤橋接 |
+| 登入回調 | 771-800 | 處理登入邏輯、儲存 Cookie |
+| UI 介面 | 801-1700+ | Sidebar（含 Premium 狀態顯示）+ 主要頁面渲染（含 AI 額度檢查） |
 
 ---
 
@@ -258,6 +278,18 @@ sorted(students, key=lambda x: (-x['rate'], -x['completed']))
 - 使用 `key` 綁定 widget 與 session state
 - 透過 callback 函式處理跨頁面導航
 
+### 6. Freemium 訂閱模式 + 手動開通
+
+**理由**：
+- 先驗證付費意願，再串接金流，降低初期開發成本
+- 單字補全（成本低、頻率低）設每日 3 次上限，語音辨識（核心功能、頻率高）不限制但記錄用量
+- `firestore.Increment(1)` 記錄語音使用量，避免併發覆蓋問題
+- plan/plan_expiry 存在 user 文件中，NoSQL 免 migration，舊用戶自動相容
+
+**未來計劃**：
+- 20+ 付費用戶後串接藍新定期定額自動扣款
+- 根據 ai_usage token 數據決定是否需要設限
+
 ---
 
 ## 邊界情況處理
@@ -275,6 +307,18 @@ sorted(students, key=lambda x: (-x['rate'], -x['completed']))
 | Firestore 批次限制 | 每 400 筆 commit 一次 |
 | 密碼錯誤 | 顯示錯誤訊息，不允許登入 |
 | Timestamp 格式 | 檢查 `hasattr(last_active, 'date')` 處理不同格式 |
+| 舊用戶無 plan 欄位 | `user_info.get("plan")` 預設為 `"free"`，向後相容 |
+| Premium 到期 | `is_premium()` 自動比對 `plan_expiry` 與今日日期 |
+| 單字補全行數過多 | 超過 100 行顯示警告，阻擋呼叫 |
+| 免費用戶 AI 額度用完 | 顯示升級提示，阻擋 Gemini 呼叫 |
+| AI 用量紀錄寫入失敗 | `record_ai_usage()` 用 try-except 靜默處理，不影響使用 |
+| 註冊名稱重複 | 查詢 Firestore 確認名稱不存在後才建立 |
+| 註冊密碼過短 | 最少 4 碼檢查 |
+| 7天試用到期 | `is_premium()` 自動比對 `plan_expiry`，到期後自動降級為 free |
+| 付費句型書未登入 | 未登入頁面不顯示句型練習，無需額外處理 |
+| 付費句型書免費用戶 | 選單顯示 🔒 圖示，選擇後顯示升級提示並 `st.stop()` |
+| 舊句型書無 is_premium | `info.get("is_premium", False)` 預設為免費，向後相容 |
+| S999 測試帳號 | 學號自動產生時排除 S999，避免影響正常編號遞增 |
 
 ### 潛在未處理
 
@@ -372,7 +416,7 @@ client_email = "..."
 1. **單一租戶**：APP_ID 固定，無法支援多租戶
 2. **無離線模式**：完全依賴網路連線
 3. **無資料匯出**：使用者無法匯出自己的學習紀錄
-4. **無管理後台**：題庫管理需另開 admin_app.py
+4. **管理後台獨立運行**：admin_app.py 需另外啟動（含學生帳號管理、訂閱管理、句型匯入/編輯）
 5. **iOS 主畫面圖示**：Streamlit Cloud 限制，無法自訂 apple-touch-icon
 
 ### 未實現功能

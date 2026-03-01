@@ -9,7 +9,7 @@ import os
 import base64
 import string
 import re
-from datetime import date
+from datetime import date, datetime, timedelta
 from google.cloud import firestore
 from google.oauth2 import service_account
 from streamlit.components.v1 import html
@@ -26,7 +26,7 @@ st.set_page_config(page_title="Flashcard Pro 雲端版", page_icon="✨", layout
 
 # 讀取 Secrets
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025"
+GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 # 預設單字內容 (Fallback)
@@ -61,6 +61,10 @@ USER_LIST_PATH = f"artifacts/{APP_ID}/public/data/users"
 SENTENCE_CATALOG_PATH = f"artifacts/{APP_ID}/public/data/sentences"
 SENTENCE_DATA_BASE_PATH = f"artifacts/{APP_ID}/public/data"
 
+# --- 免費方案限制 ---
+FREE_DAILY_VOCAB_AI_LIMIT = 3   # 單字補全每日上限
+VOCAB_AI_MAX_LINES = 100        # 單字補全每次最多行數
+
 # --- 2. 工具函式 ---
 
 def hash_string(text):
@@ -68,6 +72,127 @@ def hash_string(text):
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
+
+def is_premium(user_info):
+    """檢查使用者是否為有效的 Premium 用戶"""
+    if not user_info:
+        return False
+    if user_info.get("plan") != "premium":
+        return False
+    expiry = user_info.get("plan_expiry")
+    if not expiry:
+        return False
+    if hasattr(expiry, 'date'):
+        return expiry.date() >= date.today()
+    if isinstance(expiry, str):
+        try:
+            return datetime.fromisoformat(expiry).date() >= date.today()
+        except Exception:
+            return False
+    return False
+
+# --- 單字補全額度（免費用戶每日 3 次）---
+
+def check_vocab_ai_usage():
+    """檢查免費用戶的單字補全每日額度，回傳 (可使用, 剩餘次數)"""
+    if is_premium(st.session_state.get("user_info")):
+        return True, -1
+    today_str = str(date.today())
+    if st.session_state.get("vocab_ai_date") != today_str:
+        st.session_state.vocab_ai_date = today_str
+        st.session_state.vocab_ai_count = 0
+    used = st.session_state.get("vocab_ai_count", 0)
+    remaining = FREE_DAILY_VOCAB_AI_LIMIT - used
+    return remaining > 0, remaining
+
+def consume_vocab_ai_usage():
+    """消耗一次單字補全額度（免費用戶）"""
+    if is_premium(st.session_state.get("user_info")):
+        return
+    st.session_state.vocab_ai_count = st.session_state.get("vocab_ai_count", 0) + 1
+
+# --- 語音辨識次數紀錄（不限制，但寫入 Firestore 供統計）---
+
+def record_ai_usage(usage_type, token_count):
+    """
+    紀錄 AI 使用量，寫入 Firestore。
+    usage_type: "speech" 或 "vocab"
+    token_count: 本次消耗的 token 數（從 Gemini API usageMetadata 取得）
+    Firestore 結構: ai_usage.{type}.{date} = 累計 token 數
+    """
+    if not db or not st.session_state.get("logged_in"):
+        return
+    user_name = st.session_state.get("current_user_name")
+    if not user_name or token_count <= 0:
+        return
+    today_str = str(date.today())
+    try:
+        user_ref = db.collection(USER_LIST_PATH).document(user_name)
+        user_ref.set({
+            "ai_usage": {
+                usage_type: {
+                    today_str: firestore.Increment(token_count)
+                }
+            }
+        }, merge=True)
+    except Exception:
+        pass  # 紀錄失敗不影響使用
+
+# --- 自助註冊 ---
+
+RANDOM_COLORS = ["#FF69B4", "#1E90FF", "#32CD32", "#FF6347", "#9370DB",
+                 "#FF8C00", "#20B2AA", "#DA70D6", "#4682B4", "#F4A460"]
+
+def register_new_user(name, password):
+    """
+    註冊新用戶：自動產生學號、隨機顏色、7天 Premium 試用。
+    回傳 (success: bool, message: str)
+    """
+    if not db:
+        return False, "資料庫連線失敗，請稍後再試。"
+    name = name.strip()
+    if not name:
+        return False, "名稱不能為空。"
+    if len(name) > 20:
+        return False, "名稱不能超過 20 個字元。"
+    if not password or len(password) < 4:
+        return False, "密碼至少需要 4 個字元。"
+
+    # 檢查名稱是否已存在
+    existing = db.collection(USER_LIST_PATH).document(name).get()
+    if existing.exists:
+        return False, f"名稱「{name}」已被使用，請換一個。"
+
+    # 自動產生學號：S + 3位數字，從現有最大編號遞增
+    existing_users = fetch_users_list()
+    max_num = 0
+    for _, u in existing_users.items():
+        uid = u.get("id", "")
+        if uid.startswith("S") and uid[1:].isdigit() and uid != "S999":
+            max_num = max(max_num, int(uid[1:]))
+    auto_id = f"S{max_num + 1:03d}"
+
+    # 隨機顏色
+    color = random.choice(RANDOM_COLORS)
+
+    # 7天 Premium 試用
+    trial_expiry = datetime.now() + timedelta(days=7)
+
+    user_data = {
+        "name": name,
+        "id": auto_id,
+        "password": hash_password(password),
+        "color": color,
+        "plan": "premium",
+        "plan_expiry": trial_expiry,
+        "plan_note": "7-day free trial",
+    }
+    db.collection(USER_LIST_PATH).document(name).set(user_data)
+
+    # 清除使用者列表快取
+    fetch_users_list.clear()
+
+    return True, f"註冊成功！歡迎 {name}，享有 7 天免費 Premium 試用。"
 
 @st.cache_data(ttl=600)
 def fetch_users_list():
@@ -105,6 +230,11 @@ if "quiz_history" not in st.session_state:
     st.session_state.quiz_history = []
 if "audio_to_play" not in st.session_state:
     st.session_state.audio_to_play = None
+# 單字補全額度追蹤（免費方案）
+if "vocab_ai_count" not in st.session_state:
+    st.session_state.vocab_ai_count = 0
+if "vocab_ai_date" not in st.session_state:
+    st.session_state.vocab_ai_date = str(date.today())
 # 導航狀態管理
 if "nav_selection" not in st.session_state:
     st.session_state.nav_selection = "學習儀表板"
@@ -190,10 +320,17 @@ def delete_words_from_db(doc_ids):
 
 @st.cache_data(ttl=600)
 def fetch_sentence_catalogs():
-    """讀取公用題庫列表"""
+    """讀取公用題庫列表，回傳 {id: {name, is_premium}}"""
     if not db: return {}
     docs = db.collection(SENTENCE_CATALOG_PATH).stream()
-    return {d.id: d.to_dict().get('name', d.id) for d in docs}
+    result = {}
+    for d in docs:
+        data = d.to_dict()
+        result[d.id] = {
+            "name": data.get("name", d.id),
+            "is_premium": data.get("is_premium", False),
+        }
+    return result
 
 @st.cache_data(ttl=600)
 def fetch_sentences_by_id(dataset_id):
@@ -229,8 +366,9 @@ def update_user_stats_summary(dataset_id):
     # 1. 取得題庫資訊 (利用快取)
     sentences = fetch_sentences_by_id(dataset_id)
     catalogs = fetch_sentence_catalogs()
-    dataset_name = catalogs.get(dataset_id, dataset_id)
-    
+    cat_info = catalogs.get(dataset_id)
+    dataset_name = cat_info["name"] if cat_info else dataset_id
+
     total_count = len(sentences)
     if total_count == 0: return
 
@@ -363,7 +501,10 @@ def check_audio_batch(audio_file, template, options_list):
     if os.path.exists(prompt_file):
         with open(prompt_file, "r", encoding="utf-8") as f:
             base_prompt = f.read()
+        print(f"[Gemini Speech] Prompt loaded from file, length={len(base_prompt)}, contains 'intended': {'intended' in base_prompt}")
     else:
+        print(f"[Gemini Speech] WARNING: prompt file not found at '{prompt_file}', cwd={os.getcwd()}")
+
         # Fallback prompt if file is missing
         base_prompt = """
         Context: English pronunciation practice for non-native speakers.
@@ -412,22 +553,33 @@ def check_audio_batch(audio_file, template, options_list):
         "generationConfig": {"responseMimeType": "application/json"}
     }
     
+    token_count = 0
     try:
+        print(f"[Gemini Speech] Calling API... model={GEMINI_MODEL}")
         res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=gemini_payload, timeout=30)
+        print(f"[Gemini Speech] API status={res.status_code}")
+        if res.status_code != 200:
+            print(f"[Gemini Speech] API error body: {res.text[:500]}")
         if res.status_code == 200:
-            content_text = res.json()['candidates'][0]['content']['parts'][0]['text']
-            
+            res_json = res.json()
+            content_text = res_json['candidates'][0]['content']['parts'][0]['text']
+
+            # 提取 token 使用量
+            usage = res_json.get("usageMetadata", {})
+            token_count = usage.get("totalTokenCount", 0)
+
             # 清理 JSON 字串
             if "```json" in content_text:
                 content_text = content_text.split("```json")[1].split("```")[0]
             elif "```" in content_text:
                 content_text = content_text.split("```")[1].split("```")[0]
-            
+
             ai_result = json.loads(content_text.strip())
-            
+            print(f"[Gemini Speech] raw response: {ai_result}")  # debug log
+
             ai_transcript = ai_result.get("transcript", "")
             ai_feedback = ai_result.get("feedback", "加油！")
-            
+
             # 處理大小寫
             raw_ai_found = ai_result.get("correct_options", [])
             options_lower_map = {opt.lower(): opt for opt in options_list}
@@ -436,11 +588,16 @@ def check_audio_batch(audio_file, template, options_list):
                     ai_corrects.append(raw_opt)
                 elif raw_opt.lower() in options_lower_map:
                     ai_corrects.append(options_lower_map[raw_opt.lower()])
-            
+
             gemini_success = True
-            
+
     except Exception as e:
-        print(f"Gemini Audio Error: {e}")
+        print(f"[Gemini Speech] Error: {e}")
+        import traceback; traceback.print_exc()
+
+    # 不管成功與否，只要有 token 就記錄
+    if token_count > 0:
+        record_ai_usage("speech", token_count)
 
     # 如果 Gemini 成功且有抓到東西，直接回傳
     if gemini_success and ai_corrects:
@@ -536,7 +693,15 @@ Requirements:
     try:
         res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, timeout=30)
         if res.status_code == 200:
-            text = res.json()['candidates'][0]['content']['parts'][0]['text']
+            res_json = res.json()
+            text = res_json['candidates'][0]['content']['parts'][0]['text']
+
+            # 記錄 token 使用量
+            usage = res_json.get("usageMetadata", {})
+            token_count = usage.get("totalTokenCount", 0)
+            if token_count > 0:
+                record_ai_usage("vocab", token_count)
+
             raw_items = []
             for line in text.strip().split('\n'):
                 if '|' in line:
@@ -563,9 +728,8 @@ def get_combined_dashboard_options(vocab, catalogs):
             for d in sorted(dates, reverse=True):
                 options.append(f"單字 | {c} | {d}")
     if catalogs:
-        catalog_names = list(catalogs.values())
-        catalog_ids = list(catalogs.keys())
-        for name, cid in zip(catalog_names, catalog_ids):
+        for cid, info in catalogs.items():
+            name = info["name"]
             options.append(f"句型 | {name} (全部)")
             book_sentences = fetch_sentences_by_id(cid)
             if book_sentences:
@@ -733,25 +897,28 @@ def navigate_to_sentence(book, cat):
 
 def attempt_login():
     """處理登入的 Callback 函式"""
-    selected_name = st.session_state.login_user_name
+    input_name = st.session_state.login_user_name.strip()
     input_password = st.session_state.login_password
     users_db = st.session_state.users_db_cache
 
-    if selected_name != "請選擇..." and input_password:
-        user_record = users_db[selected_name]
-        if hash_password(input_password) == user_record["password"]:
-            st.session_state.logged_in = True
-            st.session_state.current_user_name = selected_name
-            st.session_state.user_info = user_record
-            st.session_state.login_error = None
-            sync_vocab_from_db(init_if_empty=True)
-            # 記住登入資訊到 Cookie (30 天有效)
-            cookie_controller.set("remembered_user", selected_name, max_age=30*24*60*60)
-            cookie_controller.set("remembered_pwd", input_password, max_age=30*24*60*60)
+    if input_name and input_password:
+        if input_name in users_db:
+            user_record = users_db[input_name]
+            if hash_password(input_password) == user_record["password"]:
+                st.session_state.logged_in = True
+                st.session_state.current_user_name = input_name
+                st.session_state.user_info = user_record
+                st.session_state.login_error = None
+                sync_vocab_from_db(init_if_empty=True)
+                # 記住登入資訊到 Cookie (30 天有效)
+                cookie_controller.set("remembered_user", input_name, max_age=30*24*60*60)
+                cookie_controller.set("remembered_pwd", input_password, max_age=30*24*60*60)
+            else:
+                st.session_state.login_error = "密碼錯誤。"
         else:
-            st.session_state.login_error = "密碼錯誤。"
+            st.session_state.login_error = f"找不到使用者「{input_name}」。"
     else:
-        st.session_state.login_error = "請選擇使用者並輸入密碼。"
+        st.session_state.login_error = "請輸入名稱和密碼。"
 
 # --- 7. UI 介面 ---
 
@@ -768,14 +935,9 @@ with st.sidebar:
         remembered_user = cookie_controller.get("remembered_user")
         remembered_pwd = cookie_controller.get("remembered_pwd")
 
-        # 計算預設選項 index
-        user_list = ["請選擇..."] + list(users_db.keys())
-        default_idx = user_list.index(remembered_user) if remembered_user in user_list else 0
-
-        st.selectbox(
-            "請選擇使用者",
-            user_list,
-            index=default_idx,
+        st.text_input(
+            "輸入名稱",
+            value=remembered_user or "",
             key="login_user_name"
         )
 
@@ -788,14 +950,44 @@ with st.sidebar:
         )
 
         st.button("登入", on_click=attempt_login, use_container_width=True)
-        
+
         if st.session_state.get("login_error"):
             st.error(st.session_state.login_error)
-            
+
+        # --- 自助註冊 ---
+        st.divider()
+        with st.expander("📝 新用戶註冊（7天免費試用）"):
+            reg_name = st.text_input("取一個名稱", key="reg_name", max_chars=20)
+            reg_pwd = st.text_input("設定密碼（至少4碼）", type="password", key="reg_pwd")
+            reg_pwd2 = st.text_input("確認密碼", type="password", key="reg_pwd2")
+            if st.button("🚀 立即註冊", use_container_width=True):
+                if reg_pwd != reg_pwd2:
+                    st.error("兩次密碼不一致，請重新輸入。")
+                else:
+                    ok, msg = register_new_user(reg_name, reg_pwd)
+                    if ok:
+                        st.success(msg)
+                        st.info("請在上方選擇你的名稱並登入。")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
     else:
         user = st.session_state.user_info
         st.markdown(f"### 👤 {user['name']}")
         st.caption(f"學號: {user['id']}")
+        # 顯示訂閱狀態與 AI 額度
+        if is_premium(user):
+            plan_note = user.get("plan_note", "")
+            expiry = user.get("plan_expiry")
+            if plan_note == "7-day free trial" and expiry:
+                exp_date = expiry.date() if hasattr(expiry, 'date') else expiry
+                st.success(f"💎 免費試用中（到期：{exp_date}）")
+            else:
+                st.success("💎 Premium 會員")
+        else:
+            _, remaining = check_vocab_ai_usage()
+            st.caption(f"🆓 免費方案（單字補全剩餘 {remaining}/{FREE_DAILY_VOCAB_AI_LIMIT} 次/天）")
         st.divider()
         # 綁定選單狀態至 nav_selection
         menu =st.radio("功能選單", ["學習儀表板", "單字管理", "單字練習", "句型口說"], key="nav_selection")
@@ -870,86 +1062,7 @@ div[data-testid="stExpander"] button:focus {
 
 if not st.session_state.logged_in:
     st.title("🚀 歡迎使用 Flashcard Pro")
-    st.info("請登入以開始練習。預設密碼 1234。")
-    
-    st.divider()
-
-    c_title, c_refresh = st.columns([8, 2])
-    c_title.subheader("🏆 全班句型練習排行榜")
-    if c_refresh.button("🔄 刷新數據"):
-        st.cache_data.clear()
-        st.rerun()
-
-    # 讀取排行榜數據，按句型書分組
-    all_users = fetch_users_list()
-
-    # 結構: { book_name: [ {學生, completed, total, rate, last_active}, ... ] }
-    books_data = {}
-
-    for uid, u_data in all_users.items():
-        s_stats = u_data.get("sentence_stats", {})
-        if not s_stats: continue
-
-        for book_id, stat in s_stats.items():
-            if not isinstance(stat, dict): continue
-            total = stat.get('total', 0)
-            if total == 0: continue
-
-            completed = stat.get('completed', 0)
-            book_name = stat.get('name', book_id)
-
-            # 將 Timestamp 轉換為字串
-            last_active = stat.get('last_active')
-            if hasattr(last_active, 'date'):
-                last_active_str = last_active.strftime("%m-%d %H:%M")
-            else:
-                last_active_str = str(last_active) if last_active else ""
-
-            if book_name not in books_data:
-                books_data[book_name] = []
-
-            books_data[book_name].append({
-                "student": u_data.get('name', uid),
-                "completed": completed,
-                "total": total,
-                "rate": completed / total if total > 0 else 0,
-                "last_active": last_active_str
-            })
-
-    if books_data:
-        for book_name, students in books_data.items():
-            # 按完成率排序（高到低）
-            students_sorted = sorted(students, key=lambda x: (-x['rate'], -x['completed']))
-
-            st.markdown(f"#### 📘 {book_name}")
-
-            for rank, s in enumerate(students_sorted, 1):
-                pct = int(s['rate'] * 100)
-                # 前三名使用獎牌 emoji
-                if rank == 1:
-                    rank_display = "🥇"
-                elif rank == 2:
-                    rank_display = "🥈"
-                elif rank == 3:
-                    rank_display = "🥉"
-                else:
-                    rank_display = f"{rank}."
-
-                bar_html = f"""
-                <div style="display: flex; align-items: center; margin-bottom: 6px; font-size: 0.9rem;">
-                    <div style="width: 80px; min-width: 80px;">{rank_display} {s['student']}</div>
-                    <div style="flex-grow: 1; background-color: #e0e0e0; border-radius: 6px; height: 14px; margin: 0 10px; overflow: hidden;">
-                        <div style="width: {pct}%; background-color: #4CAF50; height: 100%;"></div>
-                    </div>
-                    <div style="width: 60px; min-width: 60px; text-align: right;">{s['completed']}/{s['total']}</div>
-                    <div style="width: 90px; min-width: 90px; text-align: right; color: #888; font-size: 0.8rem;">{s['last_active']}</div>
-                </div>
-                """
-                st.markdown(bar_html, unsafe_allow_html=True)
-
-            st.write("")  # 間隔
-    else:
-        st.info("目前還沒有人開始練習句型，快登入成為第一名！")
+    st.info("請在左側登入，或展開「新用戶註冊」免費試用 7 天。")
 
 else:
     u_vocab = st.session_state.u_vocab
@@ -957,12 +1070,12 @@ else:
     if menu == "學習儀表板":
         st.title("📊 學習儀表板")
         
-        # 調整 Tab 順序：學習戰績表(原總表)在第一位
-        tab_total, tab_v, tab_s = st.tabs(["學習戰績表", "單字學習", "句型練習"])
-        
-        # --- 學習戰績表 Tab (新設計) ---
+        # 調整 Tab 順序：個人戰績表、排行榜、單字學習、句型練習
+        tab_total, tab_rank, tab_v, tab_s = st.tabs(["個人戰績表", "🏆 全班排行榜", "單字學習", "句型練習"])
+
+        # --- 個人戰績表 Tab ---
         with tab_total:
-            st.subheader("📈 學習戰績表")
+            st.subheader("📈 個人戰績表")
             
             # 1. 單字概況 (Stacked Bar)
             st.markdown("#### 📚 單字課程進度")
@@ -1005,15 +1118,19 @@ else:
             st.markdown("#### 🗣️ 句型書進度")
             catalogs = fetch_sentence_catalogs()
             if catalogs:
-                catalog_names = list(catalogs.values())
-                catalog_ids = list(catalogs.keys())
                 user_progress = fetch_all_user_sentence_progress()
-                
-                for name, cid in zip(catalog_names, catalog_ids):
+                user_info = st.session_state.get("user_info")
+
+                for cid, info in catalogs.items():
+                    name = info["name"]
+                    book_is_premium = info.get("is_premium", False)
                     b_sentences = fetch_sentences_by_id(cid)
                     if not b_sentences: continue
-                    
-                    with st.expander(f"📙 {name}", expanded=True):
+
+                    label = f"📙 {name}"
+                    if book_is_premium and not is_premium(user_info):
+                        label += " 🔒"
+                    with st.expander(label, expanded=True):
                         df_s = pd.DataFrame(b_sentences)
                         if 'Category' not in df_s.columns: df_s['Category'] = '未分類'
                         cats = sorted(df_s['Category'].unique())
@@ -1092,14 +1209,12 @@ else:
                 st.info("尚無句型資料庫。")
             else:
                 # 準備選單
-                catalog_names = list(catalogs.values())
-                catalog_ids = list(catalogs.keys())
-                
                 combined_s_options = []
-                # 書名 -> ID 對照
-                book_map = {name: cid for cid, name in catalogs.items()}
+                book_map = {}  # name -> cid
 
-                for name, cid in zip(catalog_names, catalog_ids):
+                for cid, info in catalogs.items():
+                    name = info["name"]
+                    book_map[name] = cid
                     combined_s_options.append(f"{name} (全部)")
                     book_sentences = fetch_sentences_by_id(cid)
                     if book_sentences:
@@ -1108,10 +1223,10 @@ else:
                             cats = sorted(df_b['Category'].unique())
                             for c in cats:
                                 combined_s_options.append(f"{name} | {c}")
-                
+
                 # 直接使用 key="sentence_dash_filter" 從 session state 取值，不使用 index
                 s_selection = st.selectbox("句型篩選範圍：", combined_s_options, key="sentence_dash_filter")
-                
+
                 if " (全部)" in s_selection:
                     book_name = s_selection.replace(" (全部)", "")
                     target_id = book_map.get(book_name)
@@ -1165,6 +1280,84 @@ else:
                         time.sleep(1)
                         st.rerun()
 
+        # --- 🏆 全班排行榜 Tab ---
+        with tab_rank:
+            c_title, c_refresh = st.columns([8, 2])
+            c_title.subheader("🏆 全班句型練習排行榜")
+            if c_refresh.button("🔄 刷新數據"):
+                st.cache_data.clear()
+                st.rerun()
+
+            # 讀取排行榜數據，按句型書分組
+            all_users = fetch_users_list()
+
+            # 結構: { book_name: [ {學生, completed, total, rate, last_active}, ... ] }
+            books_data = {}
+
+            for uid, u_data in all_users.items():
+                s_stats = u_data.get("sentence_stats", {})
+                if not s_stats: continue
+
+                for book_id, stat in s_stats.items():
+                    if not isinstance(stat, dict): continue
+                    total = stat.get('total', 0)
+                    if total == 0: continue
+
+                    completed = stat.get('completed', 0)
+                    book_name = stat.get('name', book_id)
+
+                    # 將 Timestamp 轉換為字串
+                    last_active = stat.get('last_active')
+                    if hasattr(last_active, 'date'):
+                        last_active_str = last_active.strftime("%m-%d %H:%M")
+                    else:
+                        last_active_str = str(last_active) if last_active else ""
+
+                    if book_name not in books_data:
+                        books_data[book_name] = []
+
+                    books_data[book_name].append({
+                        "student": u_data.get('name', uid),
+                        "completed": completed,
+                        "total": total,
+                        "rate": completed / total if total > 0 else 0,
+                        "last_active": last_active_str
+                    })
+
+            if books_data:
+                for book_name, students in books_data.items():
+                    # 按完成率排序（高到低）
+                    students_sorted = sorted(students, key=lambda x: (-x['rate'], -x['completed']))
+
+                    st.markdown(f"#### 📘 {book_name}")
+
+                    for rank, s in enumerate(students_sorted, 1):
+                        pct = int(s['rate'] * 100)
+                        # 前三名使用獎牌 emoji
+                        if rank == 1:
+                            rank_display = "🥇"
+                        elif rank == 2:
+                            rank_display = "🥈"
+                        elif rank == 3:
+                            rank_display = "🥉"
+                        else:
+                            rank_display = f"{rank}."
+
+                        bar_html = f"""
+                        <div style="display: flex; align-items: center; margin-bottom: 6px; font-size: 0.9rem;">
+                            <div style="width: 80px; min-width: 80px;">{rank_display} {s['student']}</div>
+                            <div style="flex-grow: 1; background-color: #e0e0e0; border-radius: 6px; height: 14px; margin: 0 10px; overflow: hidden;">
+                                <div style="width: {pct}%; background-color: #4CAF50; height: 100%;"></div>
+                            </div>
+                            <div style="width: 60px; min-width: 60px; text-align: right;">{s['completed']}/{s['total']}</div>
+                            <div style="width: 90px; min-width: 90px; text-align: right; color: #888; font-size: 0.8rem;">{s['last_active']}</div>
+                        </div>
+                        """
+                        st.markdown(bar_html, unsafe_allow_html=True)
+
+                    st.write("")  # 間隔
+            else:
+                st.info("目前還沒有人開始練習句型，快登入成為第一名！")
 
     elif menu == "單字管理":
         st.title("⚙️ 單字管理")
@@ -1196,8 +1389,18 @@ else:
             c_date = st.date_input("日期:", value=date.today())
             text_area = st.text_area("輸入內容:", height=150)
             if st.button("啟動 AI 處理"):
-                with st.spinner("解析中..."):
-                    st.session_state.pending_items = call_gemini_to_complete(text_area, c_name, c_date)
+                # 檢查行數限制
+                line_count = len([l for l in text_area.strip().split('\n') if l.strip()]) if text_area.strip() else 0
+                if line_count > VOCAB_AI_MAX_LINES:
+                    st.warning(f"⚠️ 每次最多 {VOCAB_AI_MAX_LINES} 行，目前 {line_count} 行，請分批輸入。")
+                else:
+                    can_use, remaining = check_vocab_ai_usage()
+                    if not can_use:
+                        st.warning(f"🔒 今日單字補全額度已用完（每日 {FREE_DAILY_VOCAB_AI_LIMIT} 次）。升級 Premium 可無限使用！")
+                    else:
+                        with st.spinner("解析中..."):
+                            st.session_state.pending_items = call_gemini_to_complete(text_area, c_name, c_date)
+                            consume_vocab_ai_usage()
             if st.session_state.get("pending_items"):
                 edited = st.data_editor(pd.DataFrame(st.session_state.pending_items), use_container_width=True, hide_index=True)
                 if st.button("💾 確認儲存", type="primary"):
@@ -1486,39 +1689,55 @@ else:
                 st.warning("⚠️ 使用預設題庫模式 (未連結雲端)"); current_sentences = INITIAL_SENTENCES
             else: st.stop()
         else:
-            catalog_names = list(catalogs.values())
-            catalog_ids = list(catalogs.keys())
-            
             combined_options = []
-            book_map = {name: cid for cid, name in catalogs.items()}
+            book_map = {}   # name -> cid
+            premium_books = set()  # 需要付費的書名
 
-            for name, cid in zip(catalog_names, catalog_ids):
-                combined_options.append(f"{name} (全部)")
+            user_info = st.session_state.get("user_info")
+            user_is_premium = is_premium(user_info)
+
+            for cid, info in catalogs.items():
+                name = info["name"]
+                book_map[name] = cid
+                book_is_premium = info.get("is_premium", False)
+                if book_is_premium:
+                    premium_books.add(name)
+
+                display_name = f"{name} 🔒" if (book_is_premium and not user_is_premium) else name
+                combined_options.append(f"{display_name} (全部)")
                 book_sentences = fetch_sentences_by_id(cid)
                 if book_sentences:
                     df_b = pd.DataFrame(book_sentences)
                     if 'Category' in df_b.columns:
                         cats = sorted(df_b['Category'].unique())
                         for c in cats:
-                            combined_options.append(f"{name} | {c}")
-            
+                            combined_options.append(f"{display_name} | {c}")
+
             # 直接使用 key="sentence_filter" 從 session state 取值，不使用 index
             selection = st.selectbox("選擇練習範圍：", combined_options, key="sentence_filter")
-            
-            if " (全部)" in selection:
-                book_name = selection.replace(" (全部)", "")
+
+            # 解析選擇 — 去掉可能的 🔒 標記
+            clean_selection = selection.replace(" 🔒", "")
+
+            if " (全部)" in clean_selection:
+                book_name = clean_selection.replace(" (全部)", "")
                 target_id = book_map.get(book_name)
                 current_sentences = fetch_sentences_by_id(target_id)
-                # 記錄當前題庫 ID 供儲存時使用
                 st.session_state.current_dataset_id = target_id
             else:
-                book_name, category = selection.split(" | ")
+                book_name, category = clean_selection.split(" | ")
                 target_id = book_map.get(book_name)
                 # 記錄當前題庫 ID 供儲存時使用
                 st.session_state.current_dataset_id = target_id
                 all_book_sentences = fetch_sentences_by_id(target_id)
                 current_sentences = [s for s in all_book_sentences if s.get('Category') == category]
-        
+
+            # 付費句型書存取控制
+            if book_name in premium_books and not user_is_premium:
+                st.warning("🔒 此句型書為 Premium 專屬內容。升級 Premium 即可解鎖所有句型書！")
+                st.info("💡 新註冊用戶享有 7 天免費試用，試用期間可使用所有 Premium 內容。")
+                st.stop()
+
         if not current_sentences: st.info("此範圍內無題目。")
         else:
             # 智慧跳轉：如果是剛進入頁面（或切換題庫），嘗試跳到第一題未完成的
@@ -1588,8 +1807,8 @@ else:
                                 if nc in options: st.session_state.completed_options.add(nc)
                             save_user_sentence_progress(template, st.session_state.completed_options, dataset_id=st.session_state.current_dataset_id)
                             st.success(f"🎉 辨識出：{', '.join(new_corrects)}")
-                            render_options_status(); render_progress() 
-                            if len(st.session_state.completed_options) == len(options): st.balloons()                            
+                            render_options_status(); render_progress()
+                            if len(st.session_state.completed_options) == len(options): st.balloons()
                         else:
                             st.warning("🤔 似乎沒有辨識到新的正確句子，請再試一次。")
                         with st.expander("查看完整聽寫內容", expanded=True):
