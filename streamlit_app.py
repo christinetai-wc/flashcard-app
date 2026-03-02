@@ -65,7 +65,34 @@ SENTENCE_DATA_BASE_PATH = f"artifacts/{APP_ID}/public/data"
 FREE_DAILY_VOCAB_AI_LIMIT = 3   # 單字補全每日上限
 VOCAB_AI_MAX_LINES = 100        # 單字補全每次最多行數
 
+# --- LINE Bot (Messaging API) ---
+LINE_CHANNEL_ACCESS_TOKEN = st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+LINE_TEACHER_USER_ID = st.secrets.get("LINE_TEACHER_USER_ID", "")
+
 # --- 2. 工具函式 ---
+
+def send_line_notify(message):
+    """透過 LINE Messaging API push message 發送通知給老師"""
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_TEACHER_USER_ID:
+        return False, "LINE Bot 尚未設定。"
+    try:
+        resp = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+            },
+            json={
+                "to": LINE_TEACHER_USER_ID,
+                "messages": [{"type": "text", "text": message}],
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return True, "通知已發送。"
+        return False, f"發送失敗 (status={resp.status_code})"
+    except Exception as e:
+        return False, f"發送失敗：{e}"
 
 def hash_string(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()
@@ -1027,6 +1054,23 @@ with st.sidebar:
                         
                         st.success("密碼修改成功！")
                         time.sleep(1)
+
+        # --- 我已付款通知（所有用戶都可見，用於續約/延長） ---
+        with st.expander("💰 我已完成轉帳"):
+            with st.form("payment_notify_form"):
+                last5 = st.text_input("轉帳帳號末5碼", max_chars=5, placeholder="例：12345")
+                if st.form_submit_button("通知老師"):
+                    if not last5 or len(last5) < 5 or not last5.isdigit():
+                        st.error("請輸入正確的 5 位數字。")
+                    else:
+                        uname = st.session_state.current_user_name
+                        uid = user.get("id", "?")
+                        msg = f"\n💰 付款通知\n學生：{uname}（{uid}）\n轉帳末5碼：{last5}\n時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                        ok, result = send_line_notify(msg)
+                        if ok:
+                            st.success("已通知老師，確認後將為你開通 Premium！")
+                        else:
+                            st.error(f"通知失敗：{result}")
 
 # --- 注入 CSS 以偽裝 Button 為純文字 (加強版) ---
 st.markdown("""

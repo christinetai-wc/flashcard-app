@@ -14,6 +14,7 @@
   - 付費方案 (premium)：所有 AI 功能無限制，所有句型書全部開放
   - 管理員透過 admin_app.py 手動開通/取消，支援天數選擇與到期日自動延長
   - 側邊欄顯示方案狀態與剩餘額度（試用中顯示到期日）
+  - **付款通知**：免費用戶側邊欄有「💰 我已完成轉帳」按鈕，輸入轉帳末5碼後透過 LINE Notify 即時通知老師（含學生名稱、學號、末5碼、時間）
 
 ### 2. 單字學習
 - **單字庫管理**：
@@ -378,6 +379,7 @@ SpeechRecognition            # 本地語音辨識 (optional)
 | Google Firestore | 資料庫 | Service Account (st.secrets) |
 | Gemini API | AI 文字處理、語音辨識 | API Key (st.secrets) |
 | Google Speech API | 語音轉文字 (備援) | 無需認證 (免費額度) |
+| LINE Messaging API | 學生付款通知老師 | Channel Access Token + User ID (st.secrets)，共用 expense_tracker 的 LINE Bot |
 
 ### API 呼叫方式
 
@@ -398,6 +400,8 @@ Content-Type: application/json
 # .streamlit/secrets.toml
 GEMINI_API_KEY = "..."
 APP_ID = "flashcard-pro-v1"
+LINE_CHANNEL_ACCESS_TOKEN = "..."  # LINE Bot Channel Access Token（共用 expense_tracker 的 Bot）
+LINE_TEACHER_USER_ID = "..."       # 老師的 LINE User ID（接收付款通知）
 
 [firebase_credentials]
 type = "service_account"
