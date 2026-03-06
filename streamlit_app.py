@@ -60,6 +60,8 @@ APP_ID = st.secrets.get("APP_ID", "flashcard-pro-v1")
 USER_LIST_PATH = f"artifacts/{APP_ID}/public/data/users"
 SENTENCE_CATALOG_PATH = f"artifacts/{APP_ID}/public/data/sentences"
 SENTENCE_DATA_BASE_PATH = f"artifacts/{APP_ID}/public/data"
+SHARED_VOCAB_CATALOG_PATH = f"artifacts/{APP_ID}/public/data/shared_vocab"
+SHARED_VOCAB_DATA_PATH = f"artifacts/{APP_ID}/public/data/shared_vocab_data"
 
 # --- 免費方案限制 ---
 FREE_DAILY_VOCAB_AI_LIMIT = 3   # 單字補全每日上限
@@ -262,6 +264,8 @@ if "vocab_ai_count" not in st.session_state:
     st.session_state.vocab_ai_count = 0
 if "vocab_ai_date" not in st.session_state:
     st.session_state.vocab_ai_date = str(date.today())
+if "pending_ocr_items" not in st.session_state:
+    st.session_state.pending_ocr_items = None
 # 導航狀態管理
 if "nav_selection" not in st.session_state:
     st.session_state.nav_selection = "學習儀表板"
@@ -373,6 +377,30 @@ def fetch_sentences_by_id(dataset_id):
     data = [d.to_dict() for d in docs]
     sorted_data = sorted(data, key=lambda x: x.get('Order', 9999))
     return sorted_data
+
+@st.cache_data(ttl=600)
+def fetch_shared_vocab_catalogs():
+    """讀取公用單字集目錄，回傳 {set_id: {name, word_count, courses}}"""
+    if not db: return {}
+    docs = db.collection(SHARED_VOCAB_CATALOG_PATH).stream()
+    result = {}
+    for d in docs:
+        data = d.to_dict()
+        result[d.id] = {
+            "name": data.get("name", d.id),
+            "word_count": data.get("word_count", 0),
+            "courses": data.get("courses", []),
+        }
+    return result
+
+@st.cache_data(ttl=600)
+def fetch_shared_vocab_words(set_id):
+    """讀取公用單字集的所有單字（單一文件讀取）"""
+    if not db: return []
+    doc = db.collection(SHARED_VOCAB_DATA_PATH).document(set_id).get()
+    if doc.exists:
+        return doc.to_dict().get("words", [])
+    return []
 
 def load_user_sentence_progress(template_hash):
     path = get_sentence_progress_path()
@@ -749,6 +777,83 @@ Requirements:
     except: pass
     return []
 
+def call_gemini_ocr(image_files, course_name, course_date):
+    """從課本圖片中辨識英文單字，回傳結構化單字列表"""
+    if not image_files: return []
+
+    # 讀取基礎 prompt（與 call_gemini_to_complete 相同）
+    prompt_file = "system_prompt.md"
+    if st.secrets.get("system_prompt"):
+        base_prompt = st.secrets["system_prompt"]
+    elif os.path.exists(prompt_file):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            base_prompt = f.read()
+    else:
+        base_prompt = """
+You are a vocabulary organizing assistant.
+Requirements:
+1. Identify the main English word each line.
+2. If a line includes definitions or example sentences, CORRECT them if there are errors.
+3. If definitions (Chinese_1, Chinese_2), POS, or example sentences are MISSING, provide them.
+4. Ensure the Part of Speech (POS) in Traditional Chinese (e.g., 名詞, 動詞, 形容詞).
+5. Ensure the (Chinese_1, Chinese_2) in Traditional Chinese.
+6. Ensure the (Word, Example) in English.
+7. Output format MUST be strictly separated by a pipe symbol (|) for each line.
+8. Format: Word | POS | Chinese_1 | Chinese_2 | Example
+9. Do not output any header or markdown symbols, just the raw data lines.
+        """
+
+    ocr_instruction = """Look at the textbook page image(s) provided.
+Extract ALL English vocabulary words visible on the page.
+For each word, provide the information in the format below.
+If the image shows Chinese translations, POS, or example sentences, include them.
+If any information is missing from the image, provide it yourself.
+Ignore page numbers, headers, footers, and non-vocabulary content.
+If no English vocabulary words are found in the image, return an empty response.
+
+"""
+    prompt = ocr_instruction + base_prompt
+
+    # 組裝 multimodal payload
+    parts = [{"text": prompt}]
+    for img_file in image_files:
+        img_file.seek(0)
+        img_bytes = img_file.read()
+        encoded_image = base64.b64encode(img_bytes).decode('utf-8')
+        fname = img_file.name.lower() if hasattr(img_file, 'name') else ""
+        if fname.endswith('.png'):
+            mime = "image/png"
+        elif fname.endswith('.webp'):
+            mime = "image/webp"
+        else:
+            mime = "image/jpeg"
+        parts.append({"inline_data": {"mime_type": mime, "data": encoded_image}})
+
+    payload = {"contents": [{"parts": parts}]}
+    try:
+        res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, timeout=60)
+        if res.status_code == 200:
+            res_json = res.json()
+            text = res_json['candidates'][0]['content']['parts'][0]['text']
+            usage = res_json.get("usageMetadata", {})
+            token_count = usage.get("totalTokenCount", 0)
+            if token_count > 0:
+                record_ai_usage("vocab", token_count)
+            raw_items = []
+            for line in text.strip().split('\n'):
+                if '|' in line:
+                    p = [i.strip() for i in line.split('|')]
+                    if len(p) >= 5:
+                        raw_items.append({
+                            "English": p[0], "POS": p[1], "Chinese_1": p[2], "Chinese_2": p[3],
+                            "Example": p[4], "Course": course_name, "Date": str(course_date),
+                            "Correct": 0, "Total": 0,
+                            "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
+                        })
+            return raw_items
+    except: pass
+    return []
+
 def get_combined_dashboard_options(vocab, catalogs):
     options = ["單字 (全部)"]
     if vocab:
@@ -1015,7 +1120,7 @@ def attempt_login():
                 st.session_state.current_user_name = input_name
                 st.session_state.user_info = user_record
                 st.session_state.login_error = None
-                sync_vocab_from_db(init_if_empty=True)
+                sync_vocab_from_db(init_if_empty=False)
                 # 載入今日已累計練習秒數
                 existing_time = user_record.get('practice_time', {}).get(str(date.today()), 0)
                 st.session_state.practice_seconds_today = existing_time
@@ -1546,52 +1651,109 @@ else:
 
     elif menu == "單字管理":
         st.title("⚙️ 單字管理")
-        tab1, tab2, tab3, tab4 = st.tabs(["批次輸入", "手動修改", "單字刪除", "📂 CSV 匯入"])
-        
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["✨ AI 輸入", "手動修改", "單字刪除", "📂 CSV 匯入/匯出", "📥 公用單字集"])
+
         with tab1:
-            # 取得之前用過的課程名稱
+            # 共用：課程名稱選擇
             existing_courses = []
             if u_vocab:
                 df_courses = pd.DataFrame(u_vocab)
                 if 'Course' in df_courses.columns:
                     existing_courses = sorted(df_courses['Course'].dropna().unique().tolist())
-
-            # 加入「新增課程...」選項
             if existing_courses:
-                # 有現有課程時，預設選第一個課程
                 course_options = existing_courses + ["➕ 新增課程..."]
-                selected_course = st.selectbox("課程名稱:", course_options, key="batch_course_select")
-
-                # 如果選擇新增課程，顯示輸入框
+                selected_course = st.selectbox("課程名稱:", course_options, key="ai_course_select")
                 if selected_course == "➕ 新增課程...":
-                    c_name = st.text_input("輸入新課程名稱:", key="new_course_name")
+                    c_name = st.text_input("輸入新課程名稱:", key="ai_new_course_name")
                 else:
                     c_name = selected_course
             else:
-                # 沒有現有課程時，直接輸入
-                c_name = st.text_input("課程名稱:", key="new_course_name")
+                c_name = st.text_input("課程名稱:", key="ai_new_course_name")
+            c_date = st.date_input("日期:", value=date.today(), key="ai_date")
 
-            c_date = st.date_input("日期:", value=date.today())
-            text_area = st.text_area("輸入內容:", height=150)
-            if st.button("啟動 AI 處理"):
-                # 檢查行數限制
-                line_count = len([l for l in text_area.strip().split('\n') if l.strip()]) if text_area.strip() else 0
-                if line_count > VOCAB_AI_MAX_LINES:
-                    st.warning(f"⚠️ 每次最多 {VOCAB_AI_MAX_LINES} 行，目前 {line_count} 行，請分批輸入。")
-                else:
+            # 輸入模式切換
+            input_mode = st.radio("輸入方式：", ["✏️ 文字輸入", "📸 拍照", "📁 上傳圖片"], horizontal=True, key="ai_input_mode")
+
+            has_input = False
+            btn_label = ""
+            ocr_images = []
+
+            if input_mode == "✏️ 文字輸入":
+                text_area = st.text_area("輸入內容:", height=150, key="ai_text_area")
+                has_input = bool(text_area and text_area.strip())
+                btn_label = "啟動 AI 處理"
+            elif input_mode == "📸 拍照":
+                camera_image = st.camera_input("拍攝課本頁面", key="ai_camera")
+                if camera_image:
+                    ocr_images = [camera_image]
+                    has_input = True
+                btn_label = "🔍 啟動 AI 辨識"
+            else:
+                uploaded_images = st.file_uploader(
+                    "上傳課本圖片（支援多張）", type=["jpg", "jpeg", "png", "webp"],
+                    accept_multiple_files=True, key="ai_upload"
+                )
+                if uploaded_images:
+                    ocr_images = uploaded_images
+                    has_input = True
+                btn_label = "🔍 啟動 AI 辨識"
+
+            # 圖片預覽
+            if ocr_images:
+                cols = st.columns(min(len(ocr_images), 3))
+                for i, img in enumerate(ocr_images):
+                    with cols[i % 3]:
+                        st.image(img, use_container_width=True, caption=f"圖片 {i+1}")
+
+            # AI 處理按鈕
+            if has_input and st.button(btn_label, key="ai_process_btn"):
+                # 圖片大小檢查
+                oversized = False
+                if ocr_images:
+                    for img in ocr_images:
+                        img.seek(0, 2)
+                        if img.tell() > 10 * 1024 * 1024:
+                            st.warning(f"圖片 {img.name} 超過 10MB，請縮小後再試。")
+                            oversized = True
+                        img.seek(0)
+                # 文字模式行數檢查
+                if input_mode == "✏️ 文字輸入":
+                    line_count = len([l for l in text_area.strip().split('\n') if l.strip()])
+                    if line_count > VOCAB_AI_MAX_LINES:
+                        st.warning(f"⚠️ 每次最多 {VOCAB_AI_MAX_LINES} 行，目前 {line_count} 行，請分批輸入。")
+                        oversized = True
+                if not oversized:
                     can_use, remaining = check_vocab_ai_usage()
                     if not can_use:
                         st.warning(f"🔒 今日單字補全額度已用完（每日 {FREE_DAILY_VOCAB_AI_LIMIT} 次）。升級 Premium 可無限使用！")
                     else:
-                        with st.spinner("解析中..."):
-                            st.session_state.pending_items = call_gemini_to_complete(text_area, c_name, c_date)
+                        spinner_msg = "解析中..." if input_mode == "✏️ 文字輸入" else "AI 辨識中，請稍候..."
+                        with st.spinner(spinner_msg):
+                            if input_mode == "✏️ 文字輸入":
+                                st.session_state.pending_items = call_gemini_to_complete(text_area, c_name, c_date)
+                            else:
+                                st.session_state.pending_ocr_items = call_gemini_ocr(ocr_images, c_name, c_date)
                             consume_vocab_ai_usage()
+                        # OCR 無結果提示
+                        if input_mode != "✏️ 文字輸入" and not st.session_state.get("pending_ocr_items"):
+                            st.warning("⚠️ 未能從圖片中辨識出單字，請確認：\n1. 圖片清晰且包含英文單字\n2. 文字方向正確\n3. 光線充足，無嚴重反光")
+
+            # 預覽與儲存（文字模式）
             if st.session_state.get("pending_items"):
                 edited = st.data_editor(pd.DataFrame(st.session_state.pending_items), use_container_width=True, hide_index=True)
-                if st.button("💾 確認儲存", type="primary"):
+                if st.button("💾 確認儲存", type="primary", key="ai_save_text"):
                     path = get_vocab_path()
                     for it in edited.to_dict('records'): db.collection(path).add(it)
                     st.session_state.pending_items = None
+                    sync_vocab_from_db(); st.success("儲存成功！"); st.rerun()
+            # 預覽與儲存（OCR 模式）
+            if st.session_state.get("pending_ocr_items"):
+                st.success(f"辨識到 {len(st.session_state.pending_ocr_items)} 個單字，請檢查後儲存：")
+                edited_ocr = st.data_editor(pd.DataFrame(st.session_state.pending_ocr_items), use_container_width=True, hide_index=True)
+                if st.button("💾 確認儲存", type="primary", key="ai_save_ocr"):
+                    path = get_vocab_path()
+                    for it in edited_ocr.to_dict('records'): db.collection(path).add(it)
+                    st.session_state.pending_ocr_items = None
                     sync_vocab_from_db(); st.success("儲存成功！"); st.rerun()
         
         with tab2:
@@ -1637,56 +1799,147 @@ else:
             else: st.info("無資料。")
 
         with tab4:
-            st.subheader("📂 從 CSV 檔案匯入")
-            uploaded_file = st.file_uploader("選擇 CSV 檔案", type=["csv"])
-            col_a, col_b = st.columns(2)
-            default_course = col_a.text_input("預設課程名稱", "匯入單字")
-            default_date = col_b.date_input("預設日期", value=date.today())
-            
-            if uploaded_file is not None:
-                try:
-                    df_csv = pd.read_csv(uploaded_file)
-                    st.write(f"預覽上傳內容 (共 {len(df_csv)} 筆)：")
-                    st.dataframe(df_csv)
-                    
-                    if "English" in df_csv.columns and "Chinese_1" in df_csv.columns:
-                        if st.button("🚀 開始匯入資料庫", type="primary"):
-                            with st.spinner("正在匯入..."):
-                                df_csv = df_csv.fillna("")
-                                items_to_add = []
-                                for _, row in df_csv.iterrows():
-                                    # CSV 匯入也改為讀取 POS
-                                    pos_val = str(row.get("POS", str(row.get("Group", "")))).strip()
-                                    if not pos_val: pos_val = "未分類"
-                                    
-                                    course_val = str(row.get("Course", "")).strip()
-                                    if not course_val: course_val = default_course
-                                    
-                                    date_val = str(row.get("Date", "")).strip()
-                                    if not date_val: date_val = str(default_date)
+            csv_tab_import, csv_tab_export = st.tabs(["📥 匯入", "📤 匯出"])
 
-                                    item = {
-                                        "English": str(row.get("English", "")),
-                                        "Chinese_1": str(row.get("Chinese_1", "")),
-                                        "Chinese_2": str(row.get("Chinese_2", "")),
-                                        "POS": pos_val,
-                                        "Example": str(row.get("Example", "")),
-                                        "Course": course_val,
-                                        "Date": date_val,
-                                        "Correct": int(row.get("Correct", 0)) if str(row.get("Correct", "0")).isdigit() else 0,
-                                        "Total": int(row.get("Total", 0)) if str(row.get("Total", "0")).isdigit() else 0,
-                                        "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
-                                    }
-                                    items_to_add.append(item)
-                                save_new_words_to_db(items_to_add)
-                                sync_vocab_from_db()
-                                st.success(f"成功匯入 {len(items_to_add)} 筆單字！")
-                                time.sleep(1)
-                                st.rerun()
+            with csv_tab_import:
+                st.subheader("📂 從 CSV 檔案匯入")
+                uploaded_file = st.file_uploader("選擇 CSV 檔案", type=["csv"])
+                col_a, col_b = st.columns(2)
+                default_course = col_a.text_input("預設課程名稱", "匯入單字")
+                default_date = col_b.date_input("預設日期", value=date.today())
+
+                if uploaded_file is not None:
+                    try:
+                        df_csv = pd.read_csv(uploaded_file)
+                        st.write(f"預覽上傳內容 (共 {len(df_csv)} 筆)：")
+                        st.dataframe(df_csv)
+
+                        if "English" in df_csv.columns and "Chinese_1" in df_csv.columns:
+                            df_csv = df_csv.fillna("")
+                            items_to_add = []
+                            for _, row in df_csv.iterrows():
+                                pos_val = str(row.get("POS", str(row.get("Group", "")))).strip()
+                                if not pos_val: pos_val = "未分類"
+                                course_val = str(row.get("Course", "")).strip()
+                                if not course_val: course_val = default_course
+                                date_val = str(row.get("Date", "")).strip()
+                                if not date_val: date_val = str(default_date)
+                                items_to_add.append({
+                                    "English": str(row.get("English", "")),
+                                    "Chinese_1": str(row.get("Chinese_1", "")),
+                                    "Chinese_2": str(row.get("Chinese_2", "")),
+                                    "POS": pos_val,
+                                    "Example": str(row.get("Example", "")),
+                                    "Course": course_val,
+                                    "Date": date_val,
+                                    "Correct": int(row.get("Correct", 0)) if str(row.get("Correct", "0")).isdigit() else 0,
+                                    "Total": int(row.get("Total", 0)) if str(row.get("Total", "0")).isdigit() else 0,
+                                    "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
+                                })
+
+                            # 重複檢查
+                            existing_english = {w.get('English', '').lower() for w in u_vocab} if u_vocab else set()
+                            new_items = [it for it in items_to_add if it['English'].lower() not in existing_english]
+                            dup_count = len(items_to_add) - len(new_items)
+
+                            if dup_count > 0:
+                                st.info(f"📋 共 {len(items_to_add)} 筆：{len(new_items)} 筆為新單字，{dup_count} 筆已存在（將跳過）")
+
+                            if new_items:
+                                if st.button(f"🚀 匯入 {len(new_items)} 個新單字", type="primary"):
+                                    with st.spinner("正在匯入..."):
+                                        save_new_words_to_db(new_items)
+                                        sync_vocab_from_db()
+                                        st.success(f"成功匯入 {len(new_items)} 筆單字！")
+                                        time.sleep(1)
+                                        st.rerun()
+                            elif items_to_add:
+                                st.success("所有單字都已存在於你的單字庫中！")
+                        else:
+                            st.error("CSV 格式錯誤：必須包含 'English' 與 'Chinese_1' 欄位。")
+                    except Exception as e:
+                        st.error(f"讀取檔案失敗: {e}")
+
+            with csv_tab_export:
+                st.subheader("📤 匯出我的單字集")
+                if u_vocab:
+                    export_cols = ["English", "POS", "Chinese_1", "Chinese_2", "Example", "Course", "Date", "Correct", "Total"]
+                    df_export = pd.DataFrame(u_vocab)
+                    # 只匯出存在的欄位
+                    export_cols = [c for c in export_cols if c in df_export.columns]
+                    df_export = df_export[export_cols]
+                    st.write(f"共 {len(df_export)} 個單字")
+                    st.dataframe(df_export, use_container_width=True, hide_index=True)
+                    csv_data = df_export.to_csv(index=False).encode('utf-8-sig')
+                    user_name = st.session_state.get("user", "vocab")
+                    st.download_button(
+                        label="⬇️ 下載 CSV",
+                        data=csv_data,
+                        file_name=f"{user_name}_vocabulary.csv",
+                        mime="text/csv",
+                        type="primary"
+                    )
+                else:
+                    st.info("你還沒有任何單字，新增後即可匯出。")
+
+        with tab5:
+            st.subheader("📥 公用單字集")
+            st.caption("匯入公用單字到你的個人單字庫，可用於練習和測驗。")
+
+            shared_catalogs = fetch_shared_vocab_catalogs()
+
+            if not shared_catalogs:
+                st.info("目前沒有公用單字集。")
+            else:
+                set_options = {sid: info["name"] for sid, info in shared_catalogs.items()}
+                selected_set_id = st.selectbox(
+                    "選擇單字集：", list(set_options.keys()),
+                    format_func=lambda x: set_options[x],
+                    key="shared_vocab_select"
+                )
+
+                shared_words = fetch_shared_vocab_words(selected_set_id)
+                catalog_info = shared_catalogs[selected_set_id]
+                all_courses = sorted(catalog_info.get("courses", []))
+                st.write(f"共 {len(shared_words)} 字" + (f"，{len(all_courses)} 個分類" if len(all_courses) > 1 else ""))
+
+                if len(all_courses) > 1:
+                    theme_options = ["全部"] + all_courses
+                    selected_themes = st.multiselect(
+                        "選擇要匯入的分類：", theme_options, default=["全部"],
+                        key=f"shared_themes_{selected_set_id}"
+                    )
+                    if "全部" in selected_themes:
+                        words_to_import = shared_words
                     else:
-                        st.error("CSV 格式錯誤：必須包含 'English' 與 'Chinese_1' 欄位。")
-                except Exception as e:
-                    st.error(f"讀取檔案失敗: {e}")
+                        words_to_import = [w for w in shared_words if w.get("Course") in selected_themes]
+                else:
+                    words_to_import = shared_words
+
+                existing_english = {w.get('English', '').lower() for w in u_vocab} if u_vocab else set()
+                new_words = [w for w in words_to_import if w.get('English', '').lower() not in existing_english]
+                dup_count = len(words_to_import) - len(new_words)
+
+                if dup_count > 0:
+                    st.info(f"{len(new_words)} 字為新單字（{dup_count} 字已存在，將跳過）")
+
+                if new_words and st.button(f"📥 匯入 {len(new_words)} 個新單字", type="primary", key=f"import_{selected_set_id}"):
+                    with st.spinner(f"正在匯入 {len(new_words)} 個單字..."):
+                        today_str = str(date.today())
+                        items_to_save = [{
+                            "English": w.get("English", ""), "POS": w.get("POS", ""),
+                            "Chinese_1": w.get("Chinese_1", ""), "Chinese_2": w.get("Chinese_2", ""),
+                            "Example": w.get("Example", ""), "Course": w.get("Course", ""),
+                            "Date": today_str, "Correct": 0, "Total": 0,
+                            "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
+                        } for w in new_words]
+                        save_new_words_to_db(items_to_save)
+                        sync_vocab_from_db()
+                        st.success(f"成功匯入 {len(items_to_save)} 筆單字！")
+                        time.sleep(1)
+                        st.rerun()
+                elif not new_words and words_to_import:
+                    st.success("所有單字都已存在於你的單字庫中！")
 
     elif menu == "單字練習":
         track_practice_time()
