@@ -735,9 +735,10 @@ Requirements:
                     p = [i.strip() for i in line.split('|')]
                     if len(p) >= 5:
                         raw_items.append({
-                            "English": p[0], "POS": p[1], "Chinese_1": p[2], "Chinese_2": p[3], 
-                            "Example": p[4], "Course": course_name, "Date": str(course_date), 
-                            "Correct": 0, "Total": 0
+                            "English": p[0], "POS": p[1], "Chinese_1": p[2], "Chinese_2": p[3],
+                            "Example": p[4], "Course": course_name, "Date": str(course_date),
+                            "Correct": 0, "Total": 0,
+                            "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
                         })
             return raw_items
     except: pass
@@ -812,6 +813,57 @@ def sample_by_accuracy(vocab_list, count):
 
     sorted_list = sorted(vocab_list, key=get_accuracy)
     return sorted_list[:count]
+
+# ── SRS (Spaced Repetition System) 核心函式 ──────────────────────
+def compute_srs_update(word, is_correct):
+    """根據答題結果計算新的 SRS 欄位（簡化 SM-2）"""
+    today_str = str(date.today())
+    interval = int(word.get('srs_interval', 0))
+    ease = float(word.get('srs_ease', 2.5))
+    streak = int(word.get('srs_streak', 0))
+
+    if is_correct:
+        streak += 1
+        if streak == 1:
+            new_interval = 1        # 首次答對：明天複習
+        elif streak == 2:
+            new_interval = 3        # 連續兩次：3 天後
+        else:
+            new_interval = round(interval * ease)
+        ease = min(3.0, ease + 0.1)  # 答對 ease 緩升，上限 3.0
+    else:
+        streak = 0
+        new_interval = 1            # 答錯：明天重來
+        ease = max(1.3, ease - 0.2)  # 答錯 ease 下降，下限 1.3
+
+    due_date = date.today() + timedelta(days=new_interval)
+    return {
+        'srs_interval': new_interval,
+        'srs_ease': round(ease, 2),
+        'srs_due': str(due_date),
+        'srs_streak': streak,
+        'srs_last_review': today_str
+    }
+
+def get_due_words(vocab_list):
+    """取得需要複習的單字：今日到期（含逾期）＋ 從未練過的新字"""
+    today_str = str(date.today())
+    return [w for w in vocab_list if not w.get('srs_due') or w.get('srs_due') <= today_str]
+
+def sample_for_review(vocab_list, count):
+    """SRS 智慧抽題：到期優先 → 新字 → 正確率低"""
+    due = get_due_words(vocab_list)
+    # 到期的排前面（按日期），新字（空字串）排後面
+    due.sort(key=lambda w: w.get('srs_due') or '9999-99-99')
+    result = due[:count]
+
+    if len(result) < count:
+        used_ids = {w.get('id') for w in result}
+        remaining = [w for w in vocab_list if w.get('id') not in used_ids]
+        result.extend(sample_by_accuracy(remaining, count - len(result)))
+
+    return result[:count]
+# ── SRS 核心函式結束 ─────────────────────────────────────────────
 
 def get_sentence_category_options(sentences, catalog_name):
     if not sentences: return [f"📚 {catalog_name} (全部)"]
@@ -1015,6 +1067,13 @@ with st.sidebar:
         else:
             _, remaining = check_vocab_ai_usage()
             st.caption(f"🆓 免費方案（單字補全剩餘 {remaining}/{FREE_DAILY_VOCAB_AI_LIMIT} 次/天）")
+        # SRS 今日複習提示
+        if st.session_state.get('u_vocab'):
+            due_today = get_due_words(st.session_state.u_vocab)
+            if due_today:
+                st.warning(f"📅 今日待複習：{len(due_today)} 個單字")
+            else:
+                st.caption("✅ 今日無待複習單字")
         st.divider()
         # 綁定選單狀態至 nav_selection
         menu =st.radio("功能選單", ["學習儀表板", "單字管理", "單字練習", "句型口說"], key="nav_selection")
@@ -1059,7 +1118,7 @@ with st.sidebar:
         with st.expander("💰 升級 Premium（NT$300/月）"):
             st.markdown(
                 "**付款方式：** LINE Pay 或 銀行轉帳\n\n"
-                "👉 掃描 QR code 加入 LINE 群組，私訊老師取得匯款資訊"
+                "👉 掃描 QR code 加入 LINE 群組，私訊小編取得匯款資訊"
             )
             import base64 as _b64
             _qr_b64 = "iVBORw0KGgoAAAANSUhEUgAAAXIAAAFyAQAAAADAX2ykAAAC70lEQVR4nO2bYWrrMAzHJcWwjwnsAD2Ke4N3pNEj7QbNUXqAQfxx4KCHZCdb8yBxYSvOi/4f3Cb6UQRCtiW7yPCIenoIBzB+XbRhX8r4ddGGfSnj10Ub9qWMXxdt2Jcy/gg8ZjmAvhsRILgJCJPt/ER/ykUPsAfmPYsGAHwbGkY8xRzaMzRq4rr9LxYdlA85Q/mCiMyDJHGbo5oS+7n+lIqKySTjQfK3kwFdFf6sitbNcHTeLZ7RDx1ODyM+3R8y/lfi28pUHAAYIDrw7wjg37tk44r9J+NL+F63yB0AnsOLxLOZhzFtn+/5YpHxFeQvz8/cn6I8fqJ+y4n9PH/I+B/lIRU/fmjSwKyDvuOYCif9ll5ea/OfjC+LL2iuMl+1KmoltEPDfBVE32mJbPHd6fwc5CO4iP7mImv/qu8aifmHQ3/DWv0n4wviizJwKogkdftzExHaQQy63YqO6/SfjF8XJ30tvYO8k+Ga+lcySet0bfPzfvleTxXaCHhumfNZwjdppVSx/8WiQ/L4JnvlPjUkR+TLSVI3OEnieNfJqtP/ctFB+1fhVXbI2uloGP0wOtb1VzbWCO1cItfmPxlfuv7CXCSlqhdS6tr6+z+tv6xbq4s8+ttLqn8BUs/yif4Ui8rRI9dHfpCzhNDl0sjfvs6VRgTPtv7ulIfcd5xnYC2SrtOGmVk2XimxbX7eef8Z4KsJrXd2YmZS4C2+u+VZ8jfn6iS+yJSddlrT7Z1a/S8XHbc/CQBN5P70qVev5Hxh1MIpQn+KrlL/yfiH7k+CFkR6v67vmm9F0j1fLDK+Cj7kGXgaJKBBDpHk6oYfRsyVUq3+l4oOfr+OIWDqVaF2Kvs/Hy51t57jDxn/qzzK1diUup6jXHeX7sdJDh5+5Pe3RJvEvYx/9P5keJWGsxw3dAOj9DzkYNjOf3dd/2bphiqXw3nBnQsn6z/vkUf7f/eqaN38j4xfF23YlzJ+XbRhX8r4ddGGfSnj10Ubdjg4/xdp05P5bGhauQAAAABJRU5ErkJggg=="
@@ -1068,10 +1127,10 @@ with st.sidebar:
                 unsafe_allow_html=True
             )
             st.divider()
-            st.markdown("**已完成轉帳？** 請在下方通知老師：")
+            st.markdown("**已完成轉帳？** 請在下方通知小編：")
             with st.form("payment_notify_form"):
                 last5 = st.text_input("轉帳帳號末5碼", max_chars=5, placeholder="例：12345")
-                if st.form_submit_button("通知老師"):
+                if st.form_submit_button("通知小編"):
                     if not last5 or len(last5) < 5 or not last5.isdigit():
                         st.error("請輸入正確的 5 位數字。")
                     else:
@@ -1080,7 +1139,7 @@ with st.sidebar:
                         msg = f"\n💰 付款通知\n學生：{uname}（{uid}）\n轉帳末5碼：{last5}\n時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}"
                         ok, result = send_line_notify(msg)
                         if ok:
-                            st.success("已通知老師，確認後將為你開通 Premium！")
+                            st.success("已通知小編，確認後將為你開通 Premium！")
                         else:
                             st.error(f"通知失敗：{result}")
 
@@ -1238,25 +1297,33 @@ else:
                 
                 filtered_vocab = filter_vocab_data(u_vocab, selection)
                 
-                col1, col2, col3 = st.columns(3)
-                
+                col1, col2, col3, col4 = st.columns(4)
+
                 # Metric 1: 總單字數
                 total_vocab_count = len(filtered_vocab)
                 col1.metric("範圍內單字數", total_vocab_count)
-                
+
                 # Metric 2: 練習覆蓋率 (有做過練習的單字數 / 總單字數)
                 practiced_count = len([v for v in filtered_vocab if v.get('Total', 0) > 0])
                 coverage_rate = (practiced_count / total_vocab_count * 100) if total_vocab_count > 0 else 0
                 col2.metric("練習覆蓋率", f"{coverage_rate:.1f}%", help="有練習過的單字比例")
-                
+
                 # Metric 3: 答題正確率 (總答對 / 總答題) -> 品質指標
                 total_correct = sum(v.get('Correct', 0) for v in filtered_vocab)
                 total_attempts = sum(v.get('Total', 0) for v in filtered_vocab)
                 accuracy_rate = (total_correct / total_attempts * 100) if total_attempts > 0 else 0
                 col3.metric("答題正確率", f"{accuracy_rate:.1f}%", help="所有練習次數中的正確比例")
-                
+
+                # Metric 4: 今日待複習
+                due_count_dash = len(get_due_words(filtered_vocab))
+                col4.metric("📅 今日待複習", due_count_dash, help="到期需要複習的單字數量")
+
                 st.divider()
-                st.dataframe(pd.DataFrame(filtered_vocab)[['English', 'Chinese_1', 'POS', 'Course', 'Date', 'Correct', 'Total']], use_container_width=True, hide_index=True)
+                df_vocab_display = pd.DataFrame(filtered_vocab)
+                df_vocab_display['下次複習'] = df_vocab_display.apply(
+                    lambda r: r.get('srs_due') if r.get('srs_due') else '尚未排程', axis=1
+                )
+                st.dataframe(df_vocab_display[['English', 'Chinese_1', 'POS', 'Course', 'Date', 'Correct', 'Total', '下次複習']], use_container_width=True, hide_index=True)
 
         # --- 句型 Tab ---
         with tab_s:
@@ -1545,7 +1612,8 @@ else:
                                         "Course": course_val,
                                         "Date": date_val,
                                         "Correct": int(row.get("Correct", 0)) if str(row.get("Correct", "0")).isdigit() else 0,
-                                        "Total": int(row.get("Total", 0)) if str(row.get("Total", "0")).isdigit() else 0
+                                        "Total": int(row.get("Total", 0)) if str(row.get("Total", "0")).isdigit() else 0,
+                                        "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
                                     }
                                     items_to_add.append(item)
                                 save_new_words_to_db(items_to_add)
@@ -1615,9 +1683,29 @@ else:
             
             if not current_set: st.info("範圍內無單字。")
             else:
-                if "test_pool" not in st.session_state or st.button("換一批題目"):
-                    # 按正確率由低到高抽題（正確率低的優先）
-                    st.session_state.test_pool = sample_by_accuracy(current_set, min(10, len(current_set)))
+                # SRS 複習提示
+                due_words = get_due_words(current_set)
+                due_count = len(due_words)
+                if due_count > 0:
+                    st.info(f"📅 此範圍有 **{due_count}** 個單字到期需要複習")
+
+                col_q1, col_q2 = st.columns(2)
+                init_pool = False
+                with col_q1:
+                    if st.button("🔄 換一批題目", use_container_width=True):
+                        st.session_state.test_pool = sample_by_accuracy(current_set, min(10, len(current_set)))
+                        st.session_state.t_idx = 0; st.session_state.t_score = 0; st.session_state.quiz_history = []
+                        st.rerun()
+                with col_q2:
+                    if due_count > 0:
+                        if st.button(f"📅 複習到期單字 ({due_count})", type="primary", use_container_width=True):
+                            st.session_state.test_pool = sample_for_review(current_set, min(10, len(current_set)))
+                            st.session_state.t_idx = 0; st.session_state.t_score = 0; st.session_state.quiz_history = []
+                            st.rerun()
+
+                if "test_pool" not in st.session_state:
+                    # 首次載入：用 SRS 智慧抽題
+                    st.session_state.test_pool = sample_for_review(current_set, min(10, len(current_set)))
                     st.session_state.t_idx = 0; st.session_state.t_score = 0; st.session_state.quiz_history = []
                     st.rerun()
                 
@@ -1631,7 +1719,8 @@ else:
                             ok = ans and (ans in str(curr['Chinese_1']) or str(curr['Chinese_1']) in ans)
                             st.session_state.quiz_history.append({"英文": curr['English'], "你的輸入": ans, "正確答案": curr['Chinese_1'], "is_correct": ok})
                             if ok: st.session_state.t_score += 1
-                            update_word_data(curr.get('id'), {"Correct": int(curr.get('Correct', 0)) + (1 if ok else 0), "Total": int(curr.get('Total', 0)) + 1})
+                            srs = compute_srs_update(curr, ok)
+                            update_word_data(curr.get('id'), {"Correct": int(curr.get('Correct', 0)) + (1 if ok else 0), "Total": int(curr.get('Total', 0)) + 1, **srs})
                             st.session_state.t_idx += 1; st.rerun()
                     auto_focus_input()
                 else:
@@ -1645,11 +1734,15 @@ else:
         with tab_m:
             st.subheader("🔗 例句連連看")
 
-            # 篩選有例句的單字
-            words_with_example = [w for w in current_set if w.get('Example') and w.get('English')]
+            # 篩選有例句且例句包含該單字的項目（避免挖空失敗）
+            words_with_example = [
+                w for w in current_set
+                if w.get('Example') and w.get('English')
+                and re.search(re.escape(w['English']), w['Example'], re.IGNORECASE)
+            ]
 
             if len(words_with_example) < 6:
-                st.warning("需要至少 6 個有例句的單字才能進行此測驗")
+                st.warning("需要至少 6 個有例句（且例句包含該單字）的單字才能進行此測驗")
             else:
                 # 初始化或換題
                 if "match_pool" not in st.session_state or st.button("🔄 換一批題目", key="match_refresh"):
@@ -1714,9 +1807,11 @@ else:
                             if q.get('id'):
                                 word_data = next((w for w in current_set if w.get('id') == q['id']), None)
                                 if word_data:
+                                    srs = compute_srs_update(word_data, is_correct)
                                     update_word_data(q['id'], {
                                         "Correct": int(word_data.get('Correct', 0)) + (1 if is_correct else 0),
-                                        "Total": int(word_data.get('Total', 0)) + 1
+                                        "Total": int(word_data.get('Total', 0)) + 1,
+                                        **srs
                                     })
                         st.session_state.match_results = results
                         st.rerun()
