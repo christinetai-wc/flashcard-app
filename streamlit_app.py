@@ -1015,7 +1015,7 @@ def attempt_login():
                 st.session_state.current_user_name = input_name
                 st.session_state.user_info = user_record
                 st.session_state.login_error = None
-                sync_vocab_from_db(init_if_empty=True)
+                sync_vocab_from_db(init_if_empty=False)
                 # 載入今日已累計練習秒數
                 existing_time = user_record.get('practice_time', {}).get(str(date.today()), 0)
                 st.session_state.practice_seconds_today = existing_time
@@ -1546,7 +1546,7 @@ else:
 
     elif menu == "單字管理":
         st.title("⚙️ 單字管理")
-        tab1, tab2, tab3, tab4 = st.tabs(["批次輸入", "手動修改", "單字刪除", "📂 CSV 匯入"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["批次輸入", "手動修改", "單字刪除", "📂 CSV 匯入", "📥 公用單字集"])
         
         with tab1:
             # 取得之前用過的課程名稱
@@ -1687,6 +1687,61 @@ else:
                         st.error("CSV 格式錯誤：必須包含 'English' 與 'Chinese_1' 欄位。")
                 except Exception as e:
                     st.error(f"讀取檔案失敗: {e}")
+
+        with tab5:
+            st.subheader("📥 公用單字集")
+            st.caption("匯入公用單字到你的個人單字庫，可用於練習和測驗。")
+
+            # Load available shared vocab CSV files
+            shared_dir = os.path.join(os.path.dirname(__file__), "shared_vocab")
+            shared_files = []
+            if os.path.isdir(shared_dir):
+                shared_files = [f for f in os.listdir(shared_dir) if f.endswith('.csv')]
+
+            if not shared_files:
+                st.info("目前沒有公用單字集。")
+            else:
+                for sf in sorted(shared_files):
+                    filepath = os.path.join(shared_dir, sf)
+                    df_shared = pd.read_csv(filepath, keep_default_na=False)
+                    sname = sf.replace(".csv", "")
+                    shared_words = df_shared.to_dict('records')
+
+                    # Extract unique course themes
+                    all_courses = sorted(df_shared['Course'].unique().tolist())
+
+                    st.markdown(f"### 📚 {sname}")
+                    st.write(f"共 {len(shared_words)} 字，{len(all_courses)} 個主題")
+
+                    # Theme selection
+                    theme_options = ["全部主題"] + all_courses
+                    selected_themes = st.multiselect(
+                        "選擇要匯入的主題：", theme_options, default=["全部主題"],
+                        key=f"shared_themes_{sf}"
+                    )
+
+                    if "全部主題" in selected_themes:
+                        words_to_import = shared_words
+                    else:
+                        words_to_import = [w for w in shared_words if w.get("Course") in selected_themes]
+
+                    # Check duplicates against user's existing vocab
+                    existing_english = {w.get('English', '').lower() for w in u_vocab} if u_vocab else set()
+                    new_words = [w for w in words_to_import if w['English'].lower() not in existing_english]
+                    dup_count = len(words_to_import) - len(new_words)
+
+                    st.info(f"選取 {len(words_to_import)} 字，其中 {len(new_words)} 字為新單字" +
+                            (f"（{dup_count} 字已存在，將跳過）" if dup_count > 0 else ""))
+
+                    if new_words and st.button(f"📥 匯入 {len(new_words)} 個新單字", type="primary", key=f"import_{sf}"):
+                        with st.spinner(f"正在匯入 {len(new_words)} 個單字..."):
+                            save_new_words_to_db(new_words)
+                            sync_vocab_from_db()
+                            st.success(f"成功匯入 {len(new_words)} 筆單字！")
+                            time.sleep(1)
+                            st.rerun()
+                    elif not new_words and words_to_import:
+                        st.success("所有選取的單字都已存在於你的單字庫中！")
 
     elif menu == "單字練習":
         track_practice_time()
