@@ -1701,30 +1701,48 @@ else:
             if not shared_files:
                 st.info("目前沒有公用單字集。")
             else:
-                for sf in sorted(shared_files):
-                    filepath = os.path.join(shared_dir, sf)
-                    df_shared = pd.read_csv(filepath, keep_default_na=False)
-                    shared_words = df_shared.to_dict('records')
-                    sname = shared_words[0].get('Course', sf.replace('.csv', '')) if shared_words else sf.replace('.csv', '')
+                # Build selector for multiple shared sets
+                set_names = [sf.replace('.csv', '') for sf in sorted(shared_files)]
+                selected_set = st.selectbox("選擇單字集：", set_names, key="shared_vocab_select")
+                sf = f"{selected_set}.csv"
+                filepath = os.path.join(shared_dir, sf)
+                df_shared = pd.read_csv(filepath, keep_default_na=False)
+                shared_words = df_shared.to_dict('records')
 
-                    # Check duplicates against user's existing vocab
-                    existing_english = {w.get('English', '').lower() for w in u_vocab} if u_vocab else set()
-                    new_words = [w for w in shared_words if w['English'].lower() not in existing_english]
-                    dup_count = len(shared_words) - len(new_words)
+                # Extract unique courses for theme selection
+                all_courses = sorted(df_shared['Course'].unique().tolist())
+                st.write(f"共 {len(shared_words)} 字，{len(all_courses)} 個分類")
 
-                    st.markdown(f"**📚 {sname}**（共 {len(shared_words)} 字）")
-                    if dup_count > 0:
-                        st.info(f"{len(new_words)} 字為新單字（{dup_count} 字已存在，將跳過）")
+                if len(all_courses) > 1:
+                    theme_options = ["全部"] + all_courses
+                    selected_themes = st.multiselect(
+                        "選擇要匯入的分類：", theme_options, default=["全部"],
+                        key=f"shared_themes_{sf}"
+                    )
+                    if "全部" in selected_themes:
+                        words_to_import = shared_words
+                    else:
+                        words_to_import = [w for w in shared_words if w.get("Course") in selected_themes]
+                else:
+                    words_to_import = shared_words
 
-                    if new_words and st.button(f"📥 匯入 {len(new_words)} 個新單字", type="primary", key=f"import_{sf}"):
-                        with st.spinner(f"正在匯入 {len(new_words)} 個單字..."):
-                            save_new_words_to_db(new_words)
-                            sync_vocab_from_db()
-                            st.success(f"成功匯入 {len(new_words)} 筆單字！")
-                            time.sleep(1)
-                            st.rerun()
-                    elif not new_words:
-                        st.success("所有單字都已存在於你的單字庫中！")
+                # Check duplicates against user's existing vocab
+                existing_english = {w.get('English', '').lower() for w in u_vocab} if u_vocab else set()
+                new_words = [w for w in words_to_import if w['English'].lower() not in existing_english]
+                dup_count = len(words_to_import) - len(new_words)
+
+                if dup_count > 0:
+                    st.info(f"{len(new_words)} 字為新單字（{dup_count} 字已存在，將跳過）")
+
+                if new_words and st.button(f"📥 匯入 {len(new_words)} 個新單字", type="primary", key=f"import_{sf}"):
+                    with st.spinner(f"正在匯入 {len(new_words)} 個單字..."):
+                        save_new_words_to_db(new_words)
+                        sync_vocab_from_db()
+                        st.success(f"成功匯入 {len(new_words)} 筆單字！")
+                        time.sleep(1)
+                        st.rerun()
+                elif not new_words:
+                    st.success("所有單字都已存在於你的單字庫中！")
 
     elif menu == "單字練習":
         track_practice_time()
