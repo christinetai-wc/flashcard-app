@@ -277,6 +277,11 @@ if "last_sentence_filter_sig" not in st.session_state:
     st.session_state.last_sentence_filter_sig = ""
 if "current_dataset_id" not in st.session_state:
     st.session_state.current_dataset_id = None # 記錄當前正在練習哪個題庫
+# 練習時長追蹤
+if "practice_last_active" not in st.session_state:
+    st.session_state.practice_last_active = None
+if "practice_seconds_today" not in st.session_state:
+    st.session_state.practice_seconds_today = 0
 
 init_users_in_db()
 
@@ -848,7 +853,7 @@ def compute_srs_update(word, is_correct):
 def get_due_words(vocab_list):
     """取得需要複習的單字：今日到期（含逾期）＋ 從未練過的新字"""
     today_str = str(date.today())
-    return [w for w in vocab_list if not w.get('srs_due') or w.get('srs_due') <= today_str]
+    return [w for w in vocab_list if not w.get('srs_due') or (isinstance(w.get('srs_due'), str) and w['srs_due'] <= today_str)]
 
 def sample_for_review(vocab_list, count):
     """SRS 智慧抽題：到期優先 → 新字 → 正確率低"""
@@ -864,6 +869,28 @@ def sample_for_review(vocab_list, count):
 
     return result[:count]
 # ── SRS 核心函式結束 ─────────────────────────────────────────────
+
+# ── 練習時長追蹤 ─────────────────────────────────────────────────
+def track_practice_time():
+    """每次 rerun 時呼叫，累加練習秒數（僅在練習頁面呼叫）"""
+    now = datetime.now()
+    last = st.session_state.get('practice_last_active')
+    st.session_state.practice_last_active = now
+    if last:
+        delta = (now - last).total_seconds()
+        if delta < 300:  # 5 分鐘內算有效練習
+            st.session_state.practice_seconds_today += delta
+
+def save_practice_time():
+    """將今日累計秒數寫入 Firestore"""
+    seconds = int(st.session_state.get('practice_seconds_today', 0))
+    if seconds <= 0 or not db: return
+    today_str = str(date.today())
+    try:
+        user_ref = db.collection(USER_LIST_PATH).document(st.session_state.current_user_name)
+        user_ref.update({f"practice_time.{today_str}": seconds})
+    except: pass
+# ── 練習時長追蹤結束 ─────────────────────────────────────────────
 
 def get_sentence_category_options(sentences, catalog_name):
     if not sentences: return [f"📚 {catalog_name} (全部)"]
@@ -989,6 +1016,10 @@ def attempt_login():
                 st.session_state.user_info = user_record
                 st.session_state.login_error = None
                 sync_vocab_from_db(init_if_empty=True)
+                # 載入今日已累計練習秒數
+                existing_time = user_record.get('practice_time', {}).get(str(date.today()), 0)
+                st.session_state.practice_seconds_today = existing_time
+                st.session_state.practice_last_active = None
                 # 記住登入資訊到 Cookie (30 天有效)
                 cookie_controller.set("remembered_user", input_name, max_age=30*24*60*60)
                 cookie_controller.set("remembered_pwd", input_password, max_age=30*24*60*60)
@@ -1074,10 +1105,14 @@ with st.sidebar:
                 st.warning(f"📅 今日待複習：{len(due_today)} 個單字")
             else:
                 st.caption("✅ 今日無待複習單字")
+        # 今日練習時長
+        mins = int(st.session_state.get('practice_seconds_today', 0)) // 60
+        st.caption(f"⏱️ 今日練習：{mins} 分鐘")
         st.divider()
         # 綁定選單狀態至 nav_selection
         menu =st.radio("功能選單", ["學習儀表板", "單字管理", "單字練習", "句型口說"], key="nav_selection")
         if st.button("登出", use_container_width=True):
+            save_practice_time()
             # 清除記住的登入資訊 Cookie
             cookie_controller.remove("remembered_user")
             cookie_controller.remove("remembered_pwd")
@@ -1284,6 +1319,33 @@ else:
                             )
                             with c2:
                                 render_custom_progress_bar(f"({tot}句)", p_done, p_prog, p_empty)
+
+            st.divider()
+
+            # 3. 練習時長
+            st.markdown("#### ⏱️ 最近練習時長")
+            practice_time = st.session_state.get('user_info', {}).get('practice_time', {})
+            if practice_time:
+                # 最近 7 天
+                recent_days = []
+                for i in range(6, -1, -1):
+                    d = date.today() - timedelta(days=i)
+                    d_str = str(d)
+                    secs = practice_time.get(d_str, 0)
+                    # 今天的用 session state 的即時值
+                    if d_str == str(date.today()):
+                        secs = max(secs, int(st.session_state.get('practice_seconds_today', 0)))
+                    recent_days.append({"日期": d.strftime("%m/%d"), "分鐘": round(secs / 60, 1)})
+                df_time = pd.DataFrame(recent_days)
+                st.bar_chart(df_time, x="日期", y="分鐘", height=200)
+                total_week = sum(r["分鐘"] for r in recent_days)
+                st.caption(f"本週合計：{total_week:.0f} 分鐘")
+            else:
+                today_mins = int(st.session_state.get('practice_seconds_today', 0)) // 60
+                if today_mins > 0:
+                    st.info(f"今日已練習 {today_mins} 分鐘")
+                else:
+                    st.info("尚無練習記錄，快去練習吧！")
 
         # --- 單字 Tab ---
         with tab_v:
@@ -1627,6 +1689,7 @@ else:
                     st.error(f"讀取檔案失敗: {e}")
 
     elif menu == "單字練習":
+        track_practice_time()
         st.title("✏️ 單字練習")
         options = get_course_options(u_vocab)
         # 直接使用 key="practice_filter" 從 session state 取值，不使用 index
@@ -1721,6 +1784,7 @@ else:
                             if ok: st.session_state.t_score += 1
                             srs = compute_srs_update(curr, ok)
                             update_word_data(curr.get('id'), {"Correct": int(curr.get('Correct', 0)) + (1 if ok else 0), "Total": int(curr.get('Total', 0)) + 1, **srs})
+                            save_practice_time()
                             st.session_state.t_idx += 1; st.rerun()
                     auto_focus_input()
                 else:
@@ -1814,6 +1878,7 @@ else:
                                         **srs
                                     })
                         st.session_state.match_results = results
+                        save_practice_time()
                         st.rerun()
 
                 # 顯示結果
@@ -1832,6 +1897,7 @@ else:
                     st.metric("得分", f"{correct_count} / 5")
 
     elif menu == "句型口說":
+        track_practice_time()
         st.title("🗣️ 句型口說挑戰")
         catalogs = fetch_sentence_catalogs()
         if not catalogs:
@@ -1957,6 +2023,7 @@ else:
                             for nc in new_corrects:
                                 if nc in options: st.session_state.completed_options.add(nc)
                             save_user_sentence_progress(template, st.session_state.completed_options, dataset_id=st.session_state.current_dataset_id)
+                            save_practice_time()
                             st.success(f"🎉 辨識出：{', '.join(new_corrects)}")
                             render_options_status(); render_progress()
                             if len(st.session_state.completed_options) == len(options): st.balloons()
