@@ -1055,8 +1055,20 @@ with st.sidebar:
                         st.success("密碼修改成功！")
                         time.sleep(1)
 
-        # --- 我已付款通知（所有用戶都可見，用於續約/延長） ---
-        with st.expander("💰 我已完成轉帳"):
+        # --- 訂閱付費資訊與付款通知 ---
+        with st.expander("💰 升級 Premium（NT$300/月）"):
+            st.markdown(
+                "**付款方式：** LINE Pay 或 銀行轉帳\n\n"
+                "👉 掃描 QR code 加入 LINE 群組，私訊老師取得匯款資訊"
+            )
+            import base64 as _b64
+            _qr_b64 = "iVBORw0KGgoAAAANSUhEUgAAAXIAAAFyAQAAAADAX2ykAAAC70lEQVR4nO2bYWrrMAzHJcWwjwnsAD2Ke4N3pNEj7QbNUXqAQfxx4KCHZCdb8yBxYSvOi/4f3Cb6UQRCtiW7yPCIenoIBzB+XbRhX8r4ddGGfSnj10Ub9qWMXxdt2Jcy/gg8ZjmAvhsRILgJCJPt/ER/ykUPsAfmPYsGAHwbGkY8xRzaMzRq4rr9LxYdlA85Q/mCiMyDJHGbo5oS+7n+lIqKySTjQfK3kwFdFf6sitbNcHTeLZ7RDx1ODyM+3R8y/lfi28pUHAAYIDrw7wjg37tk44r9J+NL+F63yB0AnsOLxLOZhzFtn+/5YpHxFeQvz8/cn6I8fqJ+y4n9PH/I+B/lIRU/fmjSwKyDvuOYCif9ll5ea/OfjC+LL2iuMl+1KmoltEPDfBVE32mJbPHd6fwc5CO4iP7mImv/qu8aifmHQ3/DWv0n4wviizJwKogkdftzExHaQQy63YqO6/SfjF8XJ30tvYO8k+Ga+lcySet0bfPzfvleTxXaCHhumfNZwjdppVSx/8WiQ/L4JnvlPjUkR+TLSVI3OEnieNfJqtP/ctFB+1fhVXbI2uloGP0wOtb1VzbWCO1cItfmPxlfuv7CXCSlqhdS6tr6+z+tv6xbq4s8+ttLqn8BUs/yif4Ui8rRI9dHfpCzhNDl0sjfvs6VRgTPtv7ulIfcd5xnYC2SrtOGmVk2XimxbX7eef8Z4KsJrXd2YmZS4C2+u+VZ8jfn6iS+yJSddlrT7Z1a/S8XHbc/CQBN5P70qVev5Hxh1MIpQn+KrlL/yfiH7k+CFkR6v67vmm9F0j1fLDK+Cj7kGXgaJKBBDpHk6oYfRsyVUq3+l4oOfr+OIWDqVaF2Kvs/Hy51t57jDxn/qzzK1diUup6jXHeX7sdJDh5+5Pe3RJvEvYx/9P5keJWGsxw3dAOj9DzkYNjOf3dd/2bphiqXw3nBnQsn6z/vkUf7f/eqaN38j4xfF23YlzJ+XbRhX8r4ddGGfSnj10Ubdjg4/xdp05P5bGhauQAAAABJRU5ErkJggg=="
+            st.markdown(
+                f'<img src="data:image/png;base64,{_qr_b64}" width="160">',
+                unsafe_allow_html=True
+            )
+            st.divider()
+            st.markdown("**已完成轉帳？** 請在下方通知老師：")
             with st.form("payment_notify_form"):
                 last5 = st.text_input("轉帳帳號末5碼", max_chars=5, placeholder="例：12345")
                 if st.form_submit_button("通知老師"):
