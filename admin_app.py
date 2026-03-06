@@ -70,6 +70,8 @@ db = get_db()
 USER_LIST_PATH = f"artifacts/{APP_ID}/public/data/users"
 SENTENCE_CATALOG_PATH = f"artifacts/{APP_ID}/public/data/sentences"
 SENTENCE_DATA_BASE_PATH = f"artifacts/{APP_ID}/public/data"
+SHARED_VOCAB_CATALOG_PATH = f"artifacts/{APP_ID}/public/data/shared_vocab"
+SHARED_VOCAB_DATA_PATH = f"artifacts/{APP_ID}/public/data/shared_vocab_data"
 
 # --- 工具函式 ---
 def hash_password(password):
@@ -116,7 +118,7 @@ def get_sentences_content(book_id):
 # --- UI 介面 ---
 st.title("⚙️ Flashcard 後台管理系統")
 
-menu = st.sidebar.radio("管理功能", ["👥 學生帳號管理", "💎 訂閱管理", "📊 AI 用量統計", "📥 匯入句型書 (CSV)", "📝 編輯現有句型書"])
+menu = st.sidebar.radio("管理功能", ["👥 學生帳號管理", "💎 訂閱管理", "📊 AI 用量統計", "📥 匯入句型書 (CSV)", "📝 編輯現有句型書", "📚 管理公用單字集"])
 
 # ==========================================
 # 功能 1: 學生帳號管理 (新增 / 編輯 / 刪除)
@@ -673,3 +675,79 @@ elif menu == "📝 編輯現有句型書":
                 del st.session_state.editor_df
                 time.sleep(1)
                 st.rerun()
+
+# ==========================================
+# 功能 6: 管理公用單字集
+# ==========================================
+elif menu == "📚 管理公用單字集":
+    st.header("📚 管理公用單字集")
+
+    tab_upload, tab_manage = st.tabs(["📤 上傳單字集", "🗂️ 管理現有單字集"])
+
+    with tab_upload:
+        st.subheader("上傳 CSV 到 Firestore")
+        set_id = st.text_input("單字集 ID", placeholder="例如: elementary1200")
+        set_name = st.text_input("顯示名稱", placeholder="例如: 國小1200單")
+        uploaded_file = st.file_uploader("上傳 CSV 檔案", type=["csv"], key="shared_vocab_csv")
+
+        if uploaded_file and set_id and set_name:
+            df = pd.read_csv(uploaded_file, keep_default_na=False)
+            st.write(f"預覽（共 {len(df)} 筆）：")
+            st.dataframe(df.head(10))
+
+            if "English" not in df.columns or "Chinese_1" not in df.columns:
+                st.error("CSV 必須包含 'English' 和 'Chinese_1' 欄位。")
+            else:
+                # 只保留共用欄位
+                shared_fields = ["English", "POS", "Chinese_1", "Chinese_2", "Example", "Course"]
+                words_list = []
+                for _, row in df.iterrows():
+                    w = {}
+                    for f in shared_fields:
+                        w[f] = str(row.get(f, "")).strip()
+                    if w["English"]:
+                        words_list.append(w)
+
+                unique_courses = sorted(set(w["Course"] for w in words_list if w["Course"]))
+                st.info(f"有效單字：{len(words_list)} 筆，分類：{', '.join(unique_courses) if unique_courses else '無'}")
+
+                if st.button("🚀 上傳到 Firestore", type="primary"):
+                    with st.spinner("正在上傳..."):
+                        # 寫入 catalog
+                        db.collection(SHARED_VOCAB_CATALOG_PATH).document(set_id).set({
+                            "id": set_id,
+                            "name": set_name,
+                            "word_count": len(words_list),
+                            "courses": unique_courses,
+                            "last_updated": firestore.SERVER_TIMESTAMP
+                        }, merge=True)
+
+                        # 寫入 data（單一文件）
+                        db.collection(SHARED_VOCAB_DATA_PATH).document(set_id).set({
+                            "words": words_list,
+                            "last_updated": firestore.SERVER_TIMESTAMP
+                        })
+
+                        st.success(f"上傳成功！{set_name}（{len(words_list)} 字）")
+
+    with tab_manage:
+        st.subheader("現有公用單字集")
+        docs = db.collection(SHARED_VOCAB_CATALOG_PATH).stream()
+        catalogs = []
+        for d in docs:
+            data = d.to_dict()
+            data["doc_id"] = d.id
+            catalogs.append(data)
+
+        if not catalogs:
+            st.info("目前沒有公用單字集。")
+        else:
+            for cat in catalogs:
+                col1, col2 = st.columns([4, 1])
+                col1.write(f"**{cat.get('name', cat['doc_id'])}** — {cat.get('word_count', '?')} 字")
+                if col2.button("🗑️ 刪除", key=f"del_sv_{cat['doc_id']}"):
+                    db.collection(SHARED_VOCAB_CATALOG_PATH).document(cat["doc_id"]).delete()
+                    db.collection(SHARED_VOCAB_DATA_PATH).document(cat["doc_id"]).delete()
+                    st.success(f"已刪除 {cat.get('name', cat['doc_id'])}")
+                    time.sleep(1)
+                    st.rerun()
