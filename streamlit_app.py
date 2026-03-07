@@ -60,6 +60,8 @@ APP_ID = st.secrets.get("APP_ID", "flashcard-pro-v1")
 USER_LIST_PATH = f"artifacts/{APP_ID}/public/data/users"
 SENTENCE_CATALOG_PATH = f"artifacts/{APP_ID}/public/data/sentences"
 SENTENCE_DATA_BASE_PATH = f"artifacts/{APP_ID}/public/data"
+SHARED_VOCAB_CATALOG_PATH = f"artifacts/{APP_ID}/public/data/shared_vocab"
+SHARED_VOCAB_DATA_PATH = f"artifacts/{APP_ID}/public/data/shared_vocab_data"
 
 # --- 免費方案限制 ---
 FREE_DAILY_VOCAB_AI_LIMIT = 3   # 單字補全每日上限
@@ -373,6 +375,30 @@ def fetch_sentences_by_id(dataset_id):
     data = [d.to_dict() for d in docs]
     sorted_data = sorted(data, key=lambda x: x.get('Order', 9999))
     return sorted_data
+
+@st.cache_data(ttl=600)
+def fetch_shared_vocab_catalogs():
+    """讀取公用單字集目錄，回傳 {set_id: {name, word_count, courses}}"""
+    if not db: return {}
+    docs = db.collection(SHARED_VOCAB_CATALOG_PATH).stream()
+    result = {}
+    for d in docs:
+        data = d.to_dict()
+        result[d.id] = {
+            "name": data.get("name", d.id),
+            "word_count": data.get("word_count", 0),
+            "courses": data.get("courses", []),
+        }
+    return result
+
+@st.cache_data(ttl=600)
+def fetch_shared_vocab_words(set_id):
+    """讀取公用單字集的所有單字（單一文件讀取）"""
+    if not db: return []
+    doc = db.collection(SHARED_VOCAB_DATA_PATH).document(set_id).get()
+    if doc.exists:
+        return doc.to_dict().get("words", [])
+    return []
 
 def load_user_sentence_progress(template_hash):
     path = get_sentence_progress_path()
@@ -1692,32 +1718,28 @@ else:
             st.subheader("📥 公用單字集")
             st.caption("匯入公用單字到你的個人單字庫，可用於練習和測驗。")
 
-            # Load available shared vocab CSV files
-            shared_dir = os.path.join(os.path.dirname(__file__), "shared_vocab")
-            shared_files = []
-            if os.path.isdir(shared_dir):
-                shared_files = [f for f in os.listdir(shared_dir) if f.endswith('.csv')]
+            shared_catalogs = fetch_shared_vocab_catalogs()
 
-            if not shared_files:
+            if not shared_catalogs:
                 st.info("目前沒有公用單字集。")
             else:
-                # Build selector for multiple shared sets
-                set_names = [sf.replace('.csv', '') for sf in sorted(shared_files)]
-                selected_set = st.selectbox("選擇單字集：", set_names, key="shared_vocab_select")
-                sf = f"{selected_set}.csv"
-                filepath = os.path.join(shared_dir, sf)
-                df_shared = pd.read_csv(filepath, keep_default_na=False)
-                shared_words = df_shared.to_dict('records')
+                set_options = {sid: info["name"] for sid, info in shared_catalogs.items()}
+                selected_set_id = st.selectbox(
+                    "選擇單字集：", list(set_options.keys()),
+                    format_func=lambda x: set_options[x],
+                    key="shared_vocab_select"
+                )
 
-                # Extract unique courses for theme selection
-                all_courses = sorted(df_shared['Course'].unique().tolist())
-                st.write(f"共 {len(shared_words)} 字，{len(all_courses)} 個分類")
+                shared_words = fetch_shared_vocab_words(selected_set_id)
+                catalog_info = shared_catalogs[selected_set_id]
+                all_courses = sorted(catalog_info.get("courses", []))
+                st.write(f"共 {len(shared_words)} 字" + (f"，{len(all_courses)} 個分類" if len(all_courses) > 1 else ""))
 
                 if len(all_courses) > 1:
                     theme_options = ["全部"] + all_courses
                     selected_themes = st.multiselect(
                         "選擇要匯入的分類：", theme_options, default=["全部"],
-                        key=f"shared_themes_{sf}"
+                        key=f"shared_themes_{selected_set_id}"
                     )
                     if "全部" in selected_themes:
                         words_to_import = shared_words
@@ -1726,22 +1748,29 @@ else:
                 else:
                     words_to_import = shared_words
 
-                # Check duplicates against user's existing vocab
                 existing_english = {w.get('English', '').lower() for w in u_vocab} if u_vocab else set()
-                new_words = [w for w in words_to_import if w['English'].lower() not in existing_english]
+                new_words = [w for w in words_to_import if w.get('English', '').lower() not in existing_english]
                 dup_count = len(words_to_import) - len(new_words)
 
                 if dup_count > 0:
                     st.info(f"{len(new_words)} 字為新單字（{dup_count} 字已存在，將跳過）")
 
-                if new_words and st.button(f"📥 匯入 {len(new_words)} 個新單字", type="primary", key=f"import_{sf}"):
+                if new_words and st.button(f"📥 匯入 {len(new_words)} 個新單字", type="primary", key=f"import_{selected_set_id}"):
                     with st.spinner(f"正在匯入 {len(new_words)} 個單字..."):
-                        save_new_words_to_db(new_words)
+                        today_str = str(date.today())
+                        items_to_save = [{
+                            "English": w.get("English", ""), "POS": w.get("POS", ""),
+                            "Chinese_1": w.get("Chinese_1", ""), "Chinese_2": w.get("Chinese_2", ""),
+                            "Example": w.get("Example", ""), "Course": w.get("Course", ""),
+                            "Date": today_str, "Correct": 0, "Total": 0,
+                            "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
+                        } for w in new_words]
+                        save_new_words_to_db(items_to_save)
                         sync_vocab_from_db()
-                        st.success(f"成功匯入 {len(new_words)} 筆單字！")
+                        st.success(f"成功匯入 {len(items_to_save)} 筆單字！")
                         time.sleep(1)
                         st.rerun()
-                elif not new_words:
+                elif not new_words and words_to_import:
                     st.success("所有單字都已存在於你的單字庫中！")
 
     elif menu == "單字練習":
