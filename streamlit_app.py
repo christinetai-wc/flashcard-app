@@ -1651,7 +1651,7 @@ else:
 
     elif menu == "單字管理":
         st.title("⚙️ 單字管理")
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["✨ AI 輸入", "手動修改", "單字刪除", "📂 CSV 匯入", "📥 公用單字集"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["✨ AI 輸入", "手動修改", "單字刪除", "📂 CSV 匯入/匯出", "📥 公用單字集"])
 
         with tab1:
             # 共用：課程名稱選擇
@@ -1799,56 +1799,88 @@ else:
             else: st.info("無資料。")
 
         with tab4:
-            st.subheader("📂 從 CSV 檔案匯入")
-            uploaded_file = st.file_uploader("選擇 CSV 檔案", type=["csv"])
-            col_a, col_b = st.columns(2)
-            default_course = col_a.text_input("預設課程名稱", "匯入單字")
-            default_date = col_b.date_input("預設日期", value=date.today())
-            
-            if uploaded_file is not None:
-                try:
-                    df_csv = pd.read_csv(uploaded_file)
-                    st.write(f"預覽上傳內容 (共 {len(df_csv)} 筆)：")
-                    st.dataframe(df_csv)
-                    
-                    if "English" in df_csv.columns and "Chinese_1" in df_csv.columns:
-                        if st.button("🚀 開始匯入資料庫", type="primary"):
-                            with st.spinner("正在匯入..."):
-                                df_csv = df_csv.fillna("")
-                                items_to_add = []
-                                for _, row in df_csv.iterrows():
-                                    # CSV 匯入也改為讀取 POS
-                                    pos_val = str(row.get("POS", str(row.get("Group", "")))).strip()
-                                    if not pos_val: pos_val = "未分類"
-                                    
-                                    course_val = str(row.get("Course", "")).strip()
-                                    if not course_val: course_val = default_course
-                                    
-                                    date_val = str(row.get("Date", "")).strip()
-                                    if not date_val: date_val = str(default_date)
+            csv_tab_import, csv_tab_export = st.tabs(["📥 匯入", "📤 匯出"])
 
-                                    item = {
-                                        "English": str(row.get("English", "")),
-                                        "Chinese_1": str(row.get("Chinese_1", "")),
-                                        "Chinese_2": str(row.get("Chinese_2", "")),
-                                        "POS": pos_val,
-                                        "Example": str(row.get("Example", "")),
-                                        "Course": course_val,
-                                        "Date": date_val,
-                                        "Correct": int(row.get("Correct", 0)) if str(row.get("Correct", "0")).isdigit() else 0,
-                                        "Total": int(row.get("Total", 0)) if str(row.get("Total", "0")).isdigit() else 0,
-                                        "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
-                                    }
-                                    items_to_add.append(item)
-                                save_new_words_to_db(items_to_add)
-                                sync_vocab_from_db()
-                                st.success(f"成功匯入 {len(items_to_add)} 筆單字！")
-                                time.sleep(1)
-                                st.rerun()
-                    else:
-                        st.error("CSV 格式錯誤：必須包含 'English' 與 'Chinese_1' 欄位。")
-                except Exception as e:
-                    st.error(f"讀取檔案失敗: {e}")
+            with csv_tab_import:
+                st.subheader("📂 從 CSV 檔案匯入")
+                uploaded_file = st.file_uploader("選擇 CSV 檔案", type=["csv"])
+                col_a, col_b = st.columns(2)
+                default_course = col_a.text_input("預設課程名稱", "匯入單字")
+                default_date = col_b.date_input("預設日期", value=date.today())
+
+                if uploaded_file is not None:
+                    try:
+                        df_csv = pd.read_csv(uploaded_file)
+                        st.write(f"預覽上傳內容 (共 {len(df_csv)} 筆)：")
+                        st.dataframe(df_csv)
+
+                        if "English" in df_csv.columns and "Chinese_1" in df_csv.columns:
+                            df_csv = df_csv.fillna("")
+                            items_to_add = []
+                            for _, row in df_csv.iterrows():
+                                pos_val = str(row.get("POS", str(row.get("Group", "")))).strip()
+                                if not pos_val: pos_val = "未分類"
+                                course_val = str(row.get("Course", "")).strip()
+                                if not course_val: course_val = default_course
+                                date_val = str(row.get("Date", "")).strip()
+                                if not date_val: date_val = str(default_date)
+                                items_to_add.append({
+                                    "English": str(row.get("English", "")),
+                                    "Chinese_1": str(row.get("Chinese_1", "")),
+                                    "Chinese_2": str(row.get("Chinese_2", "")),
+                                    "POS": pos_val,
+                                    "Example": str(row.get("Example", "")),
+                                    "Course": course_val,
+                                    "Date": date_val,
+                                    "Correct": int(row.get("Correct", 0)) if str(row.get("Correct", "0")).isdigit() else 0,
+                                    "Total": int(row.get("Total", 0)) if str(row.get("Total", "0")).isdigit() else 0,
+                                    "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
+                                })
+
+                            # 重複檢查
+                            existing_english = {w.get('English', '').lower() for w in u_vocab} if u_vocab else set()
+                            new_items = [it for it in items_to_add if it['English'].lower() not in existing_english]
+                            dup_count = len(items_to_add) - len(new_items)
+
+                            if dup_count > 0:
+                                st.info(f"📋 共 {len(items_to_add)} 筆：{len(new_items)} 筆為新單字，{dup_count} 筆已存在（將跳過）")
+
+                            if new_items:
+                                if st.button(f"🚀 匯入 {len(new_items)} 個新單字", type="primary"):
+                                    with st.spinner("正在匯入..."):
+                                        save_new_words_to_db(new_items)
+                                        sync_vocab_from_db()
+                                        st.success(f"成功匯入 {len(new_items)} 筆單字！")
+                                        time.sleep(1)
+                                        st.rerun()
+                            elif items_to_add:
+                                st.success("所有單字都已存在於你的單字庫中！")
+                        else:
+                            st.error("CSV 格式錯誤：必須包含 'English' 與 'Chinese_1' 欄位。")
+                    except Exception as e:
+                        st.error(f"讀取檔案失敗: {e}")
+
+            with csv_tab_export:
+                st.subheader("📤 匯出我的單字集")
+                if u_vocab:
+                    export_cols = ["English", "POS", "Chinese_1", "Chinese_2", "Example", "Course", "Date", "Correct", "Total"]
+                    df_export = pd.DataFrame(u_vocab)
+                    # 只匯出存在的欄位
+                    export_cols = [c for c in export_cols if c in df_export.columns]
+                    df_export = df_export[export_cols]
+                    st.write(f"共 {len(df_export)} 個單字")
+                    st.dataframe(df_export, use_container_width=True, hide_index=True)
+                    csv_data = df_export.to_csv(index=False).encode('utf-8-sig')
+                    user_name = st.session_state.get("user", "vocab")
+                    st.download_button(
+                        label="⬇️ 下載 CSV",
+                        data=csv_data,
+                        file_name=f"{user_name}_vocabulary.csv",
+                        mime="text/csv",
+                        type="primary"
+                    )
+                else:
+                    st.info("你還沒有任何單字，新增後即可匯出。")
 
         with tab5:
             st.subheader("📥 公用單字集")
