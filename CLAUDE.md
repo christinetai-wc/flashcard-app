@@ -1,449 +1,61 @@
-# CLAUDE.md - Flashcard Pro 雲端版
+# CLAUDE.md
 
-## 核心功能
+## 專案概述
+Flashcard Pro 雲端版 — 台灣國中小英語學習平台（Streamlit + Firestore + Gemini AI）
 
-### 1. 使用者管理
-- **登入/登出系統**：基於 Firestore 的使用者認證，支援密碼加密 (SHA-256)，登入採直接輸入名稱（非下拉選單）
-- **自助註冊**：新用戶可在登入頁面自行註冊（填寫名稱+密碼），學號自動產生（S+3位數字，從現有最大編號遞增，排除 S999 測試帳號），顏色隨機指定
-- **7天免費試用**：新註冊用戶自動獲得 7 天 Premium 試用（`plan="premium"`, `plan_expiry=+7天`, `plan_note="7-day free trial"`），到期後自動降為 free
-- **記住登入資訊**：使用 `streamlit-cookies-controller` 將使用者名稱和密碼存入瀏覽器 Cookie（有效期 30 天），下次開啟網頁自動預填
-- **密碼修改**：使用者可在側邊欄修改自己的密碼
-- **多使用者隔離**：每個使用者有獨立的資料路徑 (`users/{uid}/`)
-- **訂閱方案 (Premium)**：
-  - 免費方案 (free)：單字 AI 補全每日 3 次、每次最多 100 行；語音辨識不限次數但記錄使用量；付費句型書鎖定
-  - 付費方案 (premium)：所有 AI 功能無限制，所有句型書全部開放
-  - 管理員透過 admin_app.py 手動開通/取消，支援天數選擇與到期日自動延長
-  - 側邊欄顯示方案狀態與剩餘額度（試用中顯示到期日）
-  - **付款通知**：免費用戶側邊欄有「💰 我已完成轉帳」按鈕，輸入轉帳末5碼後透過 LINE Notify 即時通知老師（含學生名稱、學號、末5碼、時間）
-
-### 2. 單字學習
-- **單字庫管理**：
-  - 批次輸入：透過 Gemini AI 自動解析並補全單字資訊（詞性、中文釋義、例句）
-  - 手動修改：直接編輯現有單字
-  - CSV 匯入：支援從 CSV 檔案批次匯入
-  - 單字刪除：支援全選批次刪除
-- **快閃練習**：卡片式翻面練習，支援鍵盤快捷鍵（方向鍵切換、空白鍵翻面）
-- **實力測驗**：抽題測驗中文，記錄答對/答錯次數，優先抽正確率低的單字
-- **例句連連看**：抽 5 個單字例句挖空，提供 6 個選項（含 1 干擾項）做配對，記錄 Correct/Total，優先抽正確率低的單字
-
-### 3. 句型口說練習
-- **題庫系統**：支援多本句型書，每本有多個分類；支援付費/免費標記（`is_premium`），免費用戶無法存取付費句型書
-- **語音辨識**：
-  - 主要：Gemini 多模態 API（直接處理音訊）
-  - 備援：Google Speech Recognition (本地)
-- **進度追蹤**：記錄每個句型的選項完成狀態
-- **智慧跳轉**：切換題庫時自動跳到第一個未完成的題目
-
-### 4. 學習儀表板
-- **個人戰績表**：堆疊進度條顯示各課程/分類的完成狀態（綠=已完成、黃=進行中、灰=未開始）
-- **單字統計**：覆蓋率、正確率等指標
-- **句型統計**：完成率、進度表格
-- **排行榜**：登入後儀表板內獨立 tab「🏆 全班排行榜」，按句型書分組、完成率排序，含刷新按鈕
-
-### 5. 文字轉語音 (TTS)
-- 使用瀏覽器原生 Web Speech API
-- 支援自動播放與手動按鈕播放（相容 iOS）
-
----
-
-## 數據模型
-
-### Firestore 資料結構
-
-```
-artifacts/
-└── {APP_ID}/
-    ├── public/
-    │   └── data/
-    │       ├── users/              # 使用者列表
-    │       │   └── {user_name}/    # 文件 ID = 使用者名稱
-    │       ├── sentences/          # 句型題庫目錄
-    │       │   └── {dataset_id}/   # 題庫 metadata (含 is_premium 欄位)
-    │       └── {dataset_id}/       # 句型題目內容
-    │           └── {doc_id}/       # 單一句型題目
-    └── users/
-        └── {user_id}/
-            ├── vocabulary/         # 使用者的單字庫
-            │   └── {doc_id}/       # 單一單字
-            └── sentence_progress/  # 句型練習進度
-                └── {template_hash}/ # 以句型模板 MD5 為 ID
+## 開發指令
+```bash
+# 學生端
+streamlit run streamlit_app.py
+# 管理後台
+streamlit run admin_app.py
 ```
 
-### 單字 (Vocabulary) 資料結構
+## Secrets（.streamlit/secrets.toml）
+`GEMINI_API_KEY`, `APP_ID`（預設 "flashcard-pro-v1"）, `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_TEACHER_USER_ID`, `[firebase_credentials]`
 
-| 欄位 | 類型 | 說明 |
-|------|------|------|
-| English | string | 英文單字 |
-| POS | string | 詞性（中文，如：名詞、動詞） |
-| Chinese_1 | string | 主要中文釋義 |
-| Chinese_2 | string | 次要中文釋義 |
-| Example | string | 英文例句 |
-| Course | string | 所屬課程名稱 |
-| Date | string | 加入日期 (YYYY-MM-DD) |
-| Correct | int | 答對次數 |
-| Total | int | 總練習次數 |
-
-### 句型 (Sentence) 資料結構
-
-| 欄位 | 類型 | 說明 |
-|------|------|------|
-| Category | string | 分類名稱 |
-| Template | string | 句型模板（含 `___` 填空） |
-| Options | array[string] | 可填入的選項列表 |
-| Order | int | 排序編號 |
-| Timestamp | timestamp | 建立時間 |
-
-### 句型題庫目錄 (Sentence Catalog) 資料結構
-
-| 欄位 | 類型 | 說明 |
-|------|------|------|
-| id | string | 題庫 ID (= Document ID) |
-| name | string | 顯示名稱 |
-| is_premium | bool | 是否為付費 Premium 專屬（預設 `false`） |
-| last_updated | timestamp | 最後更新時間 |
-
-### 使用者 (User) 資料結構
-
-| 欄位 | 類型 | 說明 |
-|------|------|------|
-| name | string | 顯示名稱 |
-| id | string | 學號 |
-| password | string | SHA-256 雜湊後的密碼 |
-| color | string | 使用者代表色 |
-| sentence_stats | map | 句型練習統計（按題庫 ID 分組） |
-| plan | string | 訂閱方案：`"free"` 或 `"premium"`（預設 `"free"`） |
-| plan_expiry | timestamp | Premium 到期日，過期後自動視為 free |
-| plan_note | string | 管理員備註（如收款紀錄） |
-| ai_usage | map | AI token 使用量，格式：`{"speech": {"2026-03-01": 850}, "vocab": {"2026-03-01": 1200}}`，從 Gemini API `usageMetadata.totalTokenCount` 取得 |
-
-### 句型進度 (Sentence Progress) 資料結構
-
-| 欄位 | 類型 | 說明 |
-|------|------|------|
-| template_text | string | 原始句型模板文字 |
-| completed_options | array[string] | 已完成的選項列表 |
-| dataset_id | string | 所屬題庫 ID |
-| last_updated | timestamp | 最後更新時間 |
-
----
-
-## 架構設計
-
-### 整體結構
-
+## Firestore 路徑常數
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Streamlit UI Layer                    │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────────────┐│
-│  │ 儀表板  │ │單字管理 │ │單字練習 │ │   句型口說     ││
-│  └────┬────┘ └────┬────┘ └────┬────┘ └────────┬────────┘│
-└───────┼──────────┼──────────┼─────────────────┼─────────┘
-        │          │          │                 │
-┌───────┴──────────┴──────────┴─────────────────┴─────────┐
-│                   Business Logic Layer                   │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐ │
-│  │ 資料篩選過濾 │ │ 統計計算     │ │ AI 語音辨識      │ │
-│  └──────────────┘ └──────────────┘ └──────────────────┘ │
-└─────────────────────────────────────────────────────────┘
-        │                                    │
-┌───────┴────────────────────────────────────┴────────────┐
-│                    Data Access Layer                     │
-│  ┌──────────────────────┐  ┌────────────────────────┐   │
-│  │ Firestore CRUD       │  │ Session State 管理     │   │
-│  │ (vocabulary, users,  │  │ (暫存、UI 狀態)        │   │
-│  │  sentence_progress)  │  │                        │   │
-│  └──────────────────────┘  └────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-        │                            │
-┌───────┴────────────┐    ┌─────────┴─────────────────────┐
-│ Google Firestore   │    │ External APIs                 │
-│ (資料持久化)        │    │ - Gemini API (AI 處理)        │
-│                    │    │ - Web Speech API (TTS)        │
-│                    │    │ - SpeechRecognition (STT)     │
-└────────────────────┘    └───────────────────────────────┘
+artifacts/{APP_ID}/public/data/users/{user_name}           # 使用者帳號
+artifacts/{APP_ID}/public/data/sentences/{dataset_id}       # 句型書目錄
+artifacts/{APP_ID}/public/data/{dataset_id}/{doc_id}        # 句型題目
+artifacts/{APP_ID}/public/data/shared_vocab/{set_id}        # 公用單字集目錄
+artifacts/{APP_ID}/public/data/shared_vocab_data/{set_id}   # 公用單字集資料（單一文件 words 陣列）
+artifacts/{APP_ID}/users/{student_id}/vocabulary/{doc_id}   # 個人單字庫
+artifacts/{APP_ID}/users/{student_id}/sentence_progress/{md5}  # 句型進度
 ```
 
-### 主要模組職責
-
-| 模組區塊 | 行號範圍（約略） | 職責 |
-|----------|----------|------|
-| 設定與常數 | 1-66 | 初始化、API 設定、Firestore 連線、Cookie Controller、免費方案限制常數 |
-| 工具函式 | 67-140 | 雜湊、使用者列表取得、初始化、`is_premium()`、`check_vocab_ai_usage()`、`record_ai_usage()`、`register_new_user()` |
-| 資料庫操作 | 141-390 | CRUD 函式（單字、句型、進度） |
-| AI 與 JS 工具 | 391-770 | Gemini 呼叫、TTS、鍵盤橋接 |
-| 登入回調 | 771-800 | 處理登入邏輯、儲存 Cookie |
-| UI 介面 | 801-1700+ | Sidebar（含 Premium 狀態顯示）+ 主要頁面渲染（含 AI 額度檢查） |
-
----
-
-## 核心演算法 / 邏輯
-
-### 1. 語音辨識雙重機制 (`check_audio_batch`)
-
-```
-輸入: 音訊檔案, 句型模板, 選項列表
-輸出: { correct_options, heard, feedback }
-
-流程:
-1. 嘗試 Gemini 多模態 API
-   - 將音訊 Base64 編碼
-   - 發送 prompt + 音訊給 Gemini
-   - 解析 JSON 回應
-
-2. 如果 Gemini 成功且有結果 → 直接回傳
-
-3. 否則 Fallback 到本地 SpeechRecognition
-   - 使用 Google STT 轉錄
-   - 字串比對：將每個選項填入模板，檢查是否出現在轉錄文字中
-
-4. 回傳最終結果
-```
-
-### 2. 學習進度計算
-
-**單字**：
-- 熟練：`Correct > 0`
-- 練習中：`Total > 0 && Correct == 0`
-- 未開始：`Total == 0`
-
-**句型**：
-- 完成：所有 Options 都在 completed_options 中
-- 進行中：部分 Options 完成
-- 未開始：無任何 completed_options
-
-### 3. 智慧跳轉邏輯
-
-```python
-# 當切換題庫時 (filter signature 改變)
-if last_filter_sig != current_filter_sig:
-    for i, sentence in enumerate(sentences):
-        user_done = get_user_progress(sentence.hash)
-        if not all_options_done(sentence.options, user_done):
-            jump_to(i)  # 跳到第一個未完成的
-            break
-```
-
-### 4. 排行榜排序
-
-```python
-# 按完成率降序，同率則按完成數量降序
-sorted(students, key=lambda x: (-x['rate'], -x['completed']))
-```
-
----
-
-## 設計決策與理由
-
-### 1. 選擇 Streamlit
-
-**理由**：
-- 快速原型開發，適合教育類應用
-- 內建元件豐富（data_editor, audio_input, charts）
-- Session State 簡化狀態管理
-
-**替代方案考慮**：
-- Flask/Django：需自行處理前端，開發速度慢
-- Gradio：功能較受限
-
-### 2. Firestore 作為後端
-
-**理由**：
-- 無伺服器架構，免維運
-- 即時同步能力
-- 與 Google Cloud 生態整合良好
-
-**替代方案考慮**：
-- Supabase：需要 PostgreSQL 知識
-- MongoDB Atlas：文件結構類似，但整合性較差
-
-### 3. 使用 MD5 作為句型 Hash
-
-**理由**：
-- 句型模板作為唯一識別，Hash 後作為 Document ID
-- 避免特殊字符問題
-- 快速比對
-
-**注意**：僅用於識別，非安全性用途
-
-### 4. 雙重語音辨識機制
-
-**理由**：
-- Gemini 多模態準確度高，但偶爾會漏判
-- SpeechRecognition 作為備援提高容錯性
-- 降低 API 失敗對用戶體驗的影響
-
-### 5. Session State 管理導航
-
-**理由**：
-- Streamlit 每次互動都會重新執行，需要狀態持久化
-- 使用 `key` 綁定 widget 與 session state
-- 透過 callback 函式處理跨頁面導航
-
-### 6. Freemium 訂閱模式 + 手動開通
-
-**理由**：
-- 先驗證付費意願，再串接金流，降低初期開發成本
-- 單字補全（成本低、頻率低）設每日 3 次上限，語音辨識（核心功能、頻率高）不限制但記錄用量
-- `firestore.Increment(1)` 記錄語音使用量，避免併發覆蓋問題
-- plan/plan_expiry 存在 user 文件中，NoSQL 免 migration，舊用戶自動相容
-
-**未來計劃**：
-- 20+ 付費用戶後串接藍新定期定額自動扣款
-- 根據 ai_usage token 數據決定是否需要設限
-
----
-
-## 邊界情況處理
-
-### 已處理
-
-| 情況 | 處理方式 |
-|------|----------|
-| Firestore 連線失敗 | `get_db()` 返回 None，後續檢查 `if not db` |
-| 無使用者資料 | 自動初始化預設使用者 (`init_users_in_db`) |
-| 無單字資料 | `sync_vocab_from_db(init_if_empty=True)` 初始化預設單字 |
-| 索引越界 | `practice_idx % len(current_set)` 循環處理 |
-| API 超時 | `timeout=30` 秒限制，exception 處理 |
-| 空輸入 | 各輸入處檢查 `if not text.strip()` |
-| Firestore 批次限制 | 每 400 筆 commit 一次 |
-| 密碼錯誤 | 顯示錯誤訊息，不允許登入 |
-| Timestamp 格式 | 檢查 `hasattr(last_active, 'date')` 處理不同格式 |
-| 舊用戶無 plan 欄位 | `user_info.get("plan")` 預設為 `"free"`，向後相容 |
-| Premium 到期 | `is_premium()` 自動比對 `plan_expiry` 與今日日期 |
-| 單字補全行數過多 | 超過 100 行顯示警告，阻擋呼叫 |
-| 免費用戶 AI 額度用完 | 顯示升級提示，阻擋 Gemini 呼叫 |
-| AI 用量紀錄寫入失敗 | `record_ai_usage()` 用 try-except 靜默處理，不影響使用 |
-| 註冊名稱重複 | 查詢 Firestore 確認名稱不存在後才建立 |
-| 註冊密碼過短 | 最少 4 碼檢查 |
-| 7天試用到期 | `is_premium()` 自動比對 `plan_expiry`，到期後自動降級為 free |
-| 付費句型書未登入 | 未登入頁面不顯示句型練習，無需額外處理 |
-| 付費句型書免費用戶 | 選單顯示 🔒 圖示，選擇後顯示升級提示並 `st.stop()` |
-| 舊句型書無 is_premium | `info.get("is_premium", False)` 預設為免費，向後相容 |
-| S999 測試帳號 | 學號自動產生時排除 S999，避免影響正常編號遞增 |
-
-### 潛在未處理
-
-| 情況 | 風險 |
-|------|------|
-| 並發寫入 | 同一使用者多裝置同時操作可能覆蓋 |
-| API 配額超限 | Gemini API 有每分鐘請求限制 |
-| 大量資料載入 | 無分頁，大資料集可能緩慢 |
-| 網路中斷 | 無離線模式支援 |
-
----
-
-## 性能考慮
-
-### 快取策略
-
-| 函式 | TTL | 用途 |
-|------|-----|------|
-| `get_db()` | 永久 (cache_resource) | 避免重複建立連線 |
-| `fetch_users_list()` | 600s | 使用者列表少變動 |
-| `fetch_sentence_catalogs()` | 600s | 題庫目錄少變動 |
-| `fetch_sentences_by_id()` | 600s | 題目內容少變動 |
-
-### 優化空間
-
-1. **分頁載入**：大量單字時應實作分頁
-2. **增量同步**：目前每次都全量同步，可改用 `last_updated` 增量
-3. **前端快取**：可用 localStorage 快取已完成的題目
-4. **批次更新統計**：`update_user_stats_summary` 每次練習都計算全部，可改為增量
-
-### 瓶頸分析
-
-- **語音辨識**：Gemini API 回應時間約 2-5 秒
-- **首次載入**：需讀取多個 Collection，約 1-2 秒
-- **Session State**：大量資料存放會增加記憶體
-
----
-
-## 依賴與外部集成
-
-### Python 套件
-
-```
-streamlit                    # Web 框架
-streamlit-cookies-controller # 瀏覽器 Cookie 管理（記住登入）
-pandas                       # 資料處理
-google-cloud-firestore       # Firestore SDK
-google-auth                  # Google 認證
-requests                     # HTTP 請求
-SpeechRecognition            # 本地語音辨識 (optional)
-```
-
-### 外部服務
-
-| 服務 | 用途 | 認證方式 |
-|------|------|----------|
-| Google Firestore | 資料庫 | Service Account (st.secrets) |
-| Gemini API | AI 文字處理、語音辨識 | API Key (st.secrets) |
-| Google Speech API | 語音轉文字 (備援) | 無需認證 (免費額度) |
-| LINE Messaging API | 學生付款通知老師 | Channel Access Token + User ID (st.secrets)，共用 expense_tracker 的 LINE Bot |
-
-### API 呼叫方式
-
-**Gemini API**：
-```python
-POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={API_KEY}
-Content-Type: application/json
-
-{
-  "contents": [{"parts": [{"text": "prompt"}, {"inline_data": {...}}]}],
-  "generationConfig": {"responseMimeType": "application/json"}
-}
-```
-
-### Secrets 結構
-
-```toml
-# .streamlit/secrets.toml
-GEMINI_API_KEY = "..."
-APP_ID = "flashcard-pro-v1"
-LINE_CHANNEL_ACCESS_TOKEN = "..."  # LINE Bot Channel Access Token（共用 expense_tracker 的 Bot）
-LINE_TEACHER_USER_ID = "..."       # 老師的 LINE User ID（接收付款通知）
-
-[firebase_credentials]
-type = "service_account"
-project_id = "..."
-private_key = "..."
-client_email = "..."
-# ... 其他 service account 欄位
-```
-
----
-
-## 已知限制與改進空間
-
-### 目前限制
-
-1. **單一租戶**：APP_ID 固定，無法支援多租戶
-2. **無離線模式**：完全依賴網路連線
-3. **無資料匯出**：使用者無法匯出自己的學習紀錄
-4. **管理後台獨立運行**：admin_app.py 需另外啟動（含學生帳號管理、訂閱管理、句型匯入/編輯）
-5. **iOS 主畫面圖示**：Streamlit Cloud 限制，無法自訂 apple-touch-icon
-
-### 未實現功能
-
-- [ ] 錯題本：收集常錯單字重點練習
-- [ ] 學習提醒：推播通知
-- [ ] 社交功能：好友 PK
-- [ ] 成就系統：學習獎章
-- [ ] 自訂題庫：使用者自建句型
-
-### 可優化項目
-
-| 項目 | 優先級 | 說明 |
-|------|--------|------|
-| 增量同步 | 高 | 減少 Firestore 讀取量 |
-| 分頁載入 | 中 | 大資料集性能 |
-| 離線快取 | 中 | PWA 支援 |
-| 批次統計更新 | 低 | 減少計算開銷 |
-
-### 技術債
-
-1. **硬編碼路徑**：Firestore 路徑散落各處，應集中管理
-2. **重複程式碼**：篩選邏輯在多處重複
-3. **缺乏單元測試**：核心函式無測試覆蓋
-4. **錯誤處理不一致**：部分用 try-except，部分用 if 檢查
-5. **Magic Numbers**：如 `400` (批次大小)、`600` (TTL) 應定義為常數
+## streamlit_app.py 模組結構
+| 區段 | 行號（約略） | 內容 |
+|------|-------------|------|
+| 設定與常數 | 1-70 | import、API 常數、Firestore、Cookie、免費方案限制 |
+| 工具函式 | 70-170 | hash、is_premium、check_vocab_ai_usage、record_ai_usage、register_new_user |
+| 資料庫 CRUD | 170-400 | 單字/句型/進度/公用單字集的讀寫函式 |
+| AI 函式 | 400-850 | call_gemini_to_complete、call_gemini_ocr、check_audio_batch、TTS、鍵盤橋接 |
+| 登入與 UI | 850+ | 側邊欄、儀表板、單字管理（5 tab）、單字練習（3 tab）、句型口說 |
+
+## 單字管理 Tab 結構
+✨ AI 輸入 → 手動修改 → 單字刪除 → 📂 CSV 匯入/匯出 → 📥 公用單字集
+
+## 關鍵慣例
+- **Gemini API**：`POST {GEMINI_API_URL}?key={API_KEY}`，multimodal 用 `inline_data`（audio/image）
+- **Gemini 回應格式**：pipe-delimited `Word | POS | Chinese_1 | Chinese_2 | Example`，prompt 在 `system_prompt.md`
+- **Firestore 批次寫入**：上限 400 筆/commit（`save_new_words_to_db` 已處理）
+- **快取 TTL**：`@st.cache_data(ttl=600)` 用於少變動的集合（users、sentences、shared_vocab）
+- **Session State**：Streamlit 每次互動重跑，用 `st.session_state` 持久化；widget 用 `key=` 綁定
+- **SRS 欄位**：單字含 `srs_interval`, `srs_ease`, `srs_due`, `srs_streak`, `srs_last_review`
+- **Premium 判定**：`is_premium(user_info)` 比對 `plan` + `plan_expiry`，舊用戶無欄位預設 free
+- **免費方案限制**：`FREE_DAILY_VOCAB_AI_LIMIT=3`（AI 輸入 + OCR 共用），`VOCAB_AI_MAX_LINES=100`
+- **密碼**：SHA-256 雜湊存 Firestore
+- **繁體中文**：所有 UI 文字、POS 詞性、釋義均使用繁體中文
+
+## Gotchas
+- 新用戶 `sync_vocab_from_db(init_if_empty=False)` — 不自動建立預設單字
+- `pending_items`（文字 AI）和 `pending_ocr_items`（圖片 OCR）分開存，避免互相覆蓋
+- Timestamp 欄位需檢查 `hasattr(x, 'date')` 處理不同格式
+- 句型進度 Document ID = Template 的 MD5 hash
+- 舊資料向後相容：`.get("plan")` 預設 `"free"`、`.get("is_premium", False)` 預設免費
+- 公用單字集資料存為單一文件（words 陣列 ~200KB），不是每個單字一個文件
+
+## 詳細規格
+完整資料模型、設計決策、邊界處理、安全分析等詳見 `SPEC.md`
