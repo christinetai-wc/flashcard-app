@@ -1651,52 +1651,109 @@ else:
 
     elif menu == "單字管理":
         st.title("⚙️ 單字管理")
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["批次輸入", "手動修改", "單字刪除", "📂 CSV 匯入", "📥 公用單字集", "📷 拍照辨識"])
-        
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["✨ AI 輸入", "手動修改", "單字刪除", "📂 CSV 匯入", "📥 公用單字集"])
+
         with tab1:
-            # 取得之前用過的課程名稱
+            # 共用：課程名稱選擇
             existing_courses = []
             if u_vocab:
                 df_courses = pd.DataFrame(u_vocab)
                 if 'Course' in df_courses.columns:
                     existing_courses = sorted(df_courses['Course'].dropna().unique().tolist())
-
-            # 加入「新增課程...」選項
             if existing_courses:
-                # 有現有課程時，預設選第一個課程
                 course_options = existing_courses + ["➕ 新增課程..."]
-                selected_course = st.selectbox("課程名稱:", course_options, key="batch_course_select")
-
-                # 如果選擇新增課程，顯示輸入框
+                selected_course = st.selectbox("課程名稱:", course_options, key="ai_course_select")
                 if selected_course == "➕ 新增課程...":
-                    c_name = st.text_input("輸入新課程名稱:", key="new_course_name")
+                    c_name = st.text_input("輸入新課程名稱:", key="ai_new_course_name")
                 else:
                     c_name = selected_course
             else:
-                # 沒有現有課程時，直接輸入
-                c_name = st.text_input("課程名稱:", key="new_course_name")
+                c_name = st.text_input("課程名稱:", key="ai_new_course_name")
+            c_date = st.date_input("日期:", value=date.today(), key="ai_date")
 
-            c_date = st.date_input("日期:", value=date.today())
-            text_area = st.text_area("輸入內容:", height=150)
-            if st.button("啟動 AI 處理"):
-                # 檢查行數限制
-                line_count = len([l for l in text_area.strip().split('\n') if l.strip()]) if text_area.strip() else 0
-                if line_count > VOCAB_AI_MAX_LINES:
-                    st.warning(f"⚠️ 每次最多 {VOCAB_AI_MAX_LINES} 行，目前 {line_count} 行，請分批輸入。")
-                else:
+            # 輸入模式切換
+            input_mode = st.radio("輸入方式：", ["✏️ 文字輸入", "📸 拍照", "📁 上傳圖片"], horizontal=True, key="ai_input_mode")
+
+            has_input = False
+            btn_label = ""
+            ocr_images = []
+
+            if input_mode == "✏️ 文字輸入":
+                text_area = st.text_area("輸入內容:", height=150, key="ai_text_area")
+                has_input = bool(text_area and text_area.strip())
+                btn_label = "啟動 AI 處理"
+            elif input_mode == "📸 拍照":
+                camera_image = st.camera_input("拍攝課本頁面", key="ai_camera")
+                if camera_image:
+                    ocr_images = [camera_image]
+                    has_input = True
+                btn_label = "🔍 啟動 AI 辨識"
+            else:
+                uploaded_images = st.file_uploader(
+                    "上傳課本圖片（支援多張）", type=["jpg", "jpeg", "png", "webp"],
+                    accept_multiple_files=True, key="ai_upload"
+                )
+                if uploaded_images:
+                    ocr_images = uploaded_images
+                    has_input = True
+                btn_label = "🔍 啟動 AI 辨識"
+
+            # 圖片預覽
+            if ocr_images:
+                cols = st.columns(min(len(ocr_images), 3))
+                for i, img in enumerate(ocr_images):
+                    with cols[i % 3]:
+                        st.image(img, use_container_width=True, caption=f"圖片 {i+1}")
+
+            # AI 處理按鈕
+            if has_input and st.button(btn_label, key="ai_process_btn"):
+                # 圖片大小檢查
+                oversized = False
+                if ocr_images:
+                    for img in ocr_images:
+                        img.seek(0, 2)
+                        if img.tell() > 10 * 1024 * 1024:
+                            st.warning(f"圖片 {img.name} 超過 10MB，請縮小後再試。")
+                            oversized = True
+                        img.seek(0)
+                # 文字模式行數檢查
+                if input_mode == "✏️ 文字輸入":
+                    line_count = len([l for l in text_area.strip().split('\n') if l.strip()])
+                    if line_count > VOCAB_AI_MAX_LINES:
+                        st.warning(f"⚠️ 每次最多 {VOCAB_AI_MAX_LINES} 行，目前 {line_count} 行，請分批輸入。")
+                        oversized = True
+                if not oversized:
                     can_use, remaining = check_vocab_ai_usage()
                     if not can_use:
                         st.warning(f"🔒 今日單字補全額度已用完（每日 {FREE_DAILY_VOCAB_AI_LIMIT} 次）。升級 Premium 可無限使用！")
                     else:
-                        with st.spinner("解析中..."):
-                            st.session_state.pending_items = call_gemini_to_complete(text_area, c_name, c_date)
+                        spinner_msg = "解析中..." if input_mode == "✏️ 文字輸入" else "AI 辨識中，請稍候..."
+                        with st.spinner(spinner_msg):
+                            if input_mode == "✏️ 文字輸入":
+                                st.session_state.pending_items = call_gemini_to_complete(text_area, c_name, c_date)
+                            else:
+                                st.session_state.pending_ocr_items = call_gemini_ocr(ocr_images, c_name, c_date)
                             consume_vocab_ai_usage()
+                        # OCR 無結果提示
+                        if input_mode != "✏️ 文字輸入" and not st.session_state.get("pending_ocr_items"):
+                            st.warning("⚠️ 未能從圖片中辨識出單字，請確認：\n1. 圖片清晰且包含英文單字\n2. 文字方向正確\n3. 光線充足，無嚴重反光")
+
+            # 預覽與儲存（文字模式）
             if st.session_state.get("pending_items"):
                 edited = st.data_editor(pd.DataFrame(st.session_state.pending_items), use_container_width=True, hide_index=True)
-                if st.button("💾 確認儲存", type="primary"):
+                if st.button("💾 確認儲存", type="primary", key="ai_save_text"):
                     path = get_vocab_path()
                     for it in edited.to_dict('records'): db.collection(path).add(it)
                     st.session_state.pending_items = None
+                    sync_vocab_from_db(); st.success("儲存成功！"); st.rerun()
+            # 預覽與儲存（OCR 模式）
+            if st.session_state.get("pending_ocr_items"):
+                st.success(f"辨識到 {len(st.session_state.pending_ocr_items)} 個單字，請檢查後儲存：")
+                edited_ocr = st.data_editor(pd.DataFrame(st.session_state.pending_ocr_items), use_container_width=True, hide_index=True)
+                if st.button("💾 確認儲存", type="primary", key="ai_save_ocr"):
+                    path = get_vocab_path()
+                    for it in edited_ocr.to_dict('records'): db.collection(path).add(it)
+                    st.session_state.pending_ocr_items = None
                     sync_vocab_from_db(); st.success("儲存成功！"); st.rerun()
         
         with tab2:
@@ -1851,81 +1908,6 @@ else:
                         st.rerun()
                 elif not new_words and words_to_import:
                     st.success("所有單字都已存在於你的單字庫中！")
-
-        with tab6:
-            st.subheader("📷 拍照辨識單字")
-            st.caption("拍攝或上傳課本頁面，AI 自動辨識英文單字")
-
-            # 課程名稱選擇（與 tab1 相同模式）
-            existing_courses_ocr = []
-            if u_vocab:
-                df_courses_ocr = pd.DataFrame(u_vocab)
-                if 'Course' in df_courses_ocr.columns:
-                    existing_courses_ocr = sorted(df_courses_ocr['Course'].dropna().unique().tolist())
-            if existing_courses_ocr:
-                course_options_ocr = existing_courses_ocr + ["➕ 新增課程..."]
-                selected_course_ocr = st.selectbox("課程名稱:", course_options_ocr, key="ocr_course_select")
-                if selected_course_ocr == "➕ 新增課程...":
-                    c_name_ocr = st.text_input("輸入新課程名稱:", key="ocr_new_course_name")
-                else:
-                    c_name_ocr = selected_course_ocr
-            else:
-                c_name_ocr = st.text_input("課程名稱:", key="ocr_course_name")
-
-            c_date_ocr = st.date_input("日期:", value=date.today(), key="ocr_date")
-
-            # 圖片輸入方式
-            input_method = st.radio("選擇輸入方式：", ["📸 拍照", "📁 上傳圖片"], horizontal=True, key="ocr_input_method")
-            ocr_images = []
-            if input_method == "📸 拍照":
-                camera_image = st.camera_input("拍攝課本頁面", key="ocr_camera")
-                if camera_image:
-                    ocr_images = [camera_image]
-            else:
-                uploaded_images = st.file_uploader(
-                    "上傳課本圖片（支援多張）", type=["jpg", "jpeg", "png", "webp"],
-                    accept_multiple_files=True, key="ocr_upload"
-                )
-                if uploaded_images:
-                    ocr_images = uploaded_images
-
-            # 圖片預覽
-            if ocr_images:
-                cols = st.columns(min(len(ocr_images), 3))
-                for i, img in enumerate(ocr_images):
-                    with cols[i % 3]:
-                        st.image(img, use_container_width=True, caption=f"圖片 {i+1}")
-
-            # AI 辨識
-            if ocr_images and st.button("🔍 啟動 AI 辨識", key="ocr_process"):
-                # 檢查圖片大小
-                oversized = False
-                for img in ocr_images:
-                    img.seek(0, 2)
-                    if img.tell() > 10 * 1024 * 1024:
-                        st.warning(f"圖片 {img.name} 超過 10MB，請縮小後再試。")
-                        oversized = True
-                    img.seek(0)
-                if not oversized:
-                    can_use, remaining = check_vocab_ai_usage()
-                    if not can_use:
-                        st.warning(f"🔒 今日單字補全額度已用完（每日 {FREE_DAILY_VOCAB_AI_LIMIT} 次）。升級 Premium 可無限使用！")
-                    else:
-                        with st.spinner("AI 辨識中，請稍候..."):
-                            st.session_state.pending_ocr_items = call_gemini_ocr(ocr_images, c_name_ocr, c_date_ocr)
-                            consume_vocab_ai_usage()
-                        if not st.session_state.pending_ocr_items:
-                            st.warning("⚠️ 未能從圖片中辨識出單字，請確認：\n1. 圖片清晰且包含英文單字\n2. 文字方向正確\n3. 光線充足，無嚴重反光")
-
-            # 預覽與儲存
-            if st.session_state.get("pending_ocr_items"):
-                st.success(f"辨識到 {len(st.session_state.pending_ocr_items)} 個單字，請檢查後儲存：")
-                edited_ocr = st.data_editor(pd.DataFrame(st.session_state.pending_ocr_items), use_container_width=True, hide_index=True)
-                if st.button("💾 確認儲存", type="primary", key="ocr_save"):
-                    path = get_vocab_path()
-                    for it in edited_ocr.to_dict('records'): db.collection(path).add(it)
-                    st.session_state.pending_ocr_items = None
-                    sync_vocab_from_db(); st.success("儲存成功！"); st.rerun()
 
     elif menu == "單字練習":
         track_practice_time()
