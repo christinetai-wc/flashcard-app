@@ -264,6 +264,8 @@ if "vocab_ai_count" not in st.session_state:
     st.session_state.vocab_ai_count = 0
 if "vocab_ai_date" not in st.session_state:
     st.session_state.vocab_ai_date = str(date.today())
+if "pending_ocr_items" not in st.session_state:
+    st.session_state.pending_ocr_items = None
 # 導航狀態管理
 if "nav_selection" not in st.session_state:
     st.session_state.nav_selection = "學習儀表板"
@@ -760,6 +762,83 @@ Requirements:
             if token_count > 0:
                 record_ai_usage("vocab", token_count)
 
+            raw_items = []
+            for line in text.strip().split('\n'):
+                if '|' in line:
+                    p = [i.strip() for i in line.split('|')]
+                    if len(p) >= 5:
+                        raw_items.append({
+                            "English": p[0], "POS": p[1], "Chinese_1": p[2], "Chinese_2": p[3],
+                            "Example": p[4], "Course": course_name, "Date": str(course_date),
+                            "Correct": 0, "Total": 0,
+                            "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
+                        })
+            return raw_items
+    except: pass
+    return []
+
+def call_gemini_ocr(image_files, course_name, course_date):
+    """從課本圖片中辨識英文單字，回傳結構化單字列表"""
+    if not image_files: return []
+
+    # 讀取基礎 prompt（與 call_gemini_to_complete 相同）
+    prompt_file = "system_prompt.md"
+    if st.secrets.get("system_prompt"):
+        base_prompt = st.secrets["system_prompt"]
+    elif os.path.exists(prompt_file):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            base_prompt = f.read()
+    else:
+        base_prompt = """
+You are a vocabulary organizing assistant.
+Requirements:
+1. Identify the main English word each line.
+2. If a line includes definitions or example sentences, CORRECT them if there are errors.
+3. If definitions (Chinese_1, Chinese_2), POS, or example sentences are MISSING, provide them.
+4. Ensure the Part of Speech (POS) in Traditional Chinese (e.g., 名詞, 動詞, 形容詞).
+5. Ensure the (Chinese_1, Chinese_2) in Traditional Chinese.
+6. Ensure the (Word, Example) in English.
+7. Output format MUST be strictly separated by a pipe symbol (|) for each line.
+8. Format: Word | POS | Chinese_1 | Chinese_2 | Example
+9. Do not output any header or markdown symbols, just the raw data lines.
+        """
+
+    ocr_instruction = """Look at the textbook page image(s) provided.
+Extract ALL English vocabulary words visible on the page.
+For each word, provide the information in the format below.
+If the image shows Chinese translations, POS, or example sentences, include them.
+If any information is missing from the image, provide it yourself.
+Ignore page numbers, headers, footers, and non-vocabulary content.
+If no English vocabulary words are found in the image, return an empty response.
+
+"""
+    prompt = ocr_instruction + base_prompt
+
+    # 組裝 multimodal payload
+    parts = [{"text": prompt}]
+    for img_file in image_files:
+        img_file.seek(0)
+        img_bytes = img_file.read()
+        encoded_image = base64.b64encode(img_bytes).decode('utf-8')
+        fname = img_file.name.lower() if hasattr(img_file, 'name') else ""
+        if fname.endswith('.png'):
+            mime = "image/png"
+        elif fname.endswith('.webp'):
+            mime = "image/webp"
+        else:
+            mime = "image/jpeg"
+        parts.append({"inline_data": {"mime_type": mime, "data": encoded_image}})
+
+    payload = {"contents": [{"parts": parts}]}
+    try:
+        res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, timeout=60)
+        if res.status_code == 200:
+            res_json = res.json()
+            text = res_json['candidates'][0]['content']['parts'][0]['text']
+            usage = res_json.get("usageMetadata", {})
+            token_count = usage.get("totalTokenCount", 0)
+            if token_count > 0:
+                record_ai_usage("vocab", token_count)
             raw_items = []
             for line in text.strip().split('\n'):
                 if '|' in line:
@@ -1572,7 +1651,7 @@ else:
 
     elif menu == "單字管理":
         st.title("⚙️ 單字管理")
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["批次輸入", "手動修改", "單字刪除", "📂 CSV 匯入", "📥 公用單字集"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["批次輸入", "手動修改", "單字刪除", "📂 CSV 匯入", "📥 公用單字集", "📷 拍照辨識"])
         
         with tab1:
             # 取得之前用過的課程名稱
@@ -1772,6 +1851,81 @@ else:
                         st.rerun()
                 elif not new_words and words_to_import:
                     st.success("所有單字都已存在於你的單字庫中！")
+
+        with tab6:
+            st.subheader("📷 拍照辨識單字")
+            st.caption("拍攝或上傳課本頁面，AI 自動辨識英文單字")
+
+            # 課程名稱選擇（與 tab1 相同模式）
+            existing_courses_ocr = []
+            if u_vocab:
+                df_courses_ocr = pd.DataFrame(u_vocab)
+                if 'Course' in df_courses_ocr.columns:
+                    existing_courses_ocr = sorted(df_courses_ocr['Course'].dropna().unique().tolist())
+            if existing_courses_ocr:
+                course_options_ocr = existing_courses_ocr + ["➕ 新增課程..."]
+                selected_course_ocr = st.selectbox("課程名稱:", course_options_ocr, key="ocr_course_select")
+                if selected_course_ocr == "➕ 新增課程...":
+                    c_name_ocr = st.text_input("輸入新課程名稱:", key="ocr_new_course_name")
+                else:
+                    c_name_ocr = selected_course_ocr
+            else:
+                c_name_ocr = st.text_input("課程名稱:", key="ocr_course_name")
+
+            c_date_ocr = st.date_input("日期:", value=date.today(), key="ocr_date")
+
+            # 圖片輸入方式
+            input_method = st.radio("選擇輸入方式：", ["📸 拍照", "📁 上傳圖片"], horizontal=True, key="ocr_input_method")
+            ocr_images = []
+            if input_method == "📸 拍照":
+                camera_image = st.camera_input("拍攝課本頁面", key="ocr_camera")
+                if camera_image:
+                    ocr_images = [camera_image]
+            else:
+                uploaded_images = st.file_uploader(
+                    "上傳課本圖片（支援多張）", type=["jpg", "jpeg", "png", "webp"],
+                    accept_multiple_files=True, key="ocr_upload"
+                )
+                if uploaded_images:
+                    ocr_images = uploaded_images
+
+            # 圖片預覽
+            if ocr_images:
+                cols = st.columns(min(len(ocr_images), 3))
+                for i, img in enumerate(ocr_images):
+                    with cols[i % 3]:
+                        st.image(img, use_container_width=True, caption=f"圖片 {i+1}")
+
+            # AI 辨識
+            if ocr_images and st.button("🔍 啟動 AI 辨識", key="ocr_process"):
+                # 檢查圖片大小
+                oversized = False
+                for img in ocr_images:
+                    img.seek(0, 2)
+                    if img.tell() > 10 * 1024 * 1024:
+                        st.warning(f"圖片 {img.name} 超過 10MB，請縮小後再試。")
+                        oversized = True
+                    img.seek(0)
+                if not oversized:
+                    can_use, remaining = check_vocab_ai_usage()
+                    if not can_use:
+                        st.warning(f"🔒 今日單字補全額度已用完（每日 {FREE_DAILY_VOCAB_AI_LIMIT} 次）。升級 Premium 可無限使用！")
+                    else:
+                        with st.spinner("AI 辨識中，請稍候..."):
+                            st.session_state.pending_ocr_items = call_gemini_ocr(ocr_images, c_name_ocr, c_date_ocr)
+                            consume_vocab_ai_usage()
+                        if not st.session_state.pending_ocr_items:
+                            st.warning("⚠️ 未能從圖片中辨識出單字，請確認：\n1. 圖片清晰且包含英文單字\n2. 文字方向正確\n3. 光線充足，無嚴重反光")
+
+            # 預覽與儲存
+            if st.session_state.get("pending_ocr_items"):
+                st.success(f"辨識到 {len(st.session_state.pending_ocr_items)} 個單字，請檢查後儲存：")
+                edited_ocr = st.data_editor(pd.DataFrame(st.session_state.pending_ocr_items), use_container_width=True, hide_index=True)
+                if st.button("💾 確認儲存", type="primary", key="ocr_save"):
+                    path = get_vocab_path()
+                    for it in edited_ocr.to_dict('records'): db.collection(path).add(it)
+                    st.session_state.pending_ocr_items = None
+                    sync_vocab_from_db(); st.success("儲存成功！"); st.rerun()
 
     elif menu == "單字練習":
         track_practice_time()
