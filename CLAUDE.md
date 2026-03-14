@@ -38,7 +38,7 @@ artifacts/{APP_ID}/users/{student_id}/sentence_progress/{md5}  # 句型進度
 ✨ AI 輸入 → 手動修改 → 單字刪除 → 📂 CSV 匯入/匯出 → 📥 公用單字集
 
 ## 關鍵慣例
-- **Gemini API**：`POST {GEMINI_API_URL}?key={API_KEY}`，multimodal 用 `inline_data`（audio/image）
+- **Gemini API**：`POST {GEMINI_API_URL}?key={API_KEY}`，multimodal 用 `inline_data`（audio/image）；API key 有網域限制（僅 `flashcard-techeasy.streamlit.app`），Python 端需帶 `GEMINI_HEADERS`（Referer）
 - **Gemini 回應格式**：pipe-delimited `Word | POS | Chinese_1 | Chinese_2 | Example`，prompt 在 `system_prompt.md`
 - **Firestore 批次寫入**：上限 400 筆/commit（`save_new_words_to_db` 已處理）
 - **快取 TTL**：`@st.cache_data(ttl=600)` 用於少變動的集合（users、sentences、shared_vocab）

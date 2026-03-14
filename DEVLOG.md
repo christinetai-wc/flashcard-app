@@ -1,5 +1,16 @@
 # Development Log
 
+## 2026-03-15
+
+### 口說練習 UI 調整
+- 移除 AI 回饋閃現框，只保留下方歷史紀錄
+- 錄音中新增「✋ 我說完了」手動停止按鈕（VAD + 手動雙軌）
+
+### Gemini API key 網域限制
+- GCP Console 設定 HTTP Referrer 限制（僅允許 `flashcard-techeasy.streamlit.app` 和 `localhost:8501`）
+- Python server 端所有 Gemini 請求加上 `Referer` header
+- `expense_tracker` 和 `meeting-notes` 改用另一把無限制的 key
+
 ## 2026-03-14
 
 ### 句型口說全面重構 — JS 自包含元件
