@@ -466,10 +466,12 @@ Return JSON:
     }}
 
     // === 瀏覽器語音辨識（錄音時同步執行） ===
+    let _srAvailable = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+
     function speechRecognize() {{
         return new Promise(resolve => {{
             const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SR) {{ resolve(null); return; }}
+            if (!SR) {{ _srAvailable = false; resolve(null); return; }}
             const rec = new SR();
             rec.lang = 'en-US';
             rec.interimResults = false;
@@ -484,10 +486,10 @@ Return JSON:
                 }}
                 resolve(results);
             }};
-            rec.onerror = () => {{ if (!resolved) {{ resolved = true; resolve(null); }} }};
+            rec.onerror = (e) => {{ if (!resolved) {{ resolved = true; if (e.error === 'not-allowed') _srAvailable = false; resolve(null); }} }};
             rec.onend = () => {{ if (!resolved) {{ resolved = true; resolve(null); }} }};
             setTimeout(() => {{ if (!resolved) {{ resolved = true; try {{ rec.stop(); }} catch(e) {{}} resolve(null); }} }}, 12000);
-            rec.start();
+            try {{ rec.start(); }} catch(e) {{ _srAvailable = false; resolved = true; resolve(null); }}
         }});
     }}
 
@@ -684,8 +686,9 @@ Return JSON:
             updateVolBars(0);
             const srTranscripts = await srPromise;
 
-            // 預篩：SpeechRecognition 完全沒辨識到 → 不送 Gemini，省 token
-            if (!srTranscripts || srTranscripts.length === 0 || srTranscripts.every(t => !t.trim())) {{
+            // 預篩：SpeechRecognition 可用且完全沒辨識到 → 不送 Gemini，省 token
+            // 如果 SR 不可用（如 iOS iframe），跳過預篩直接送 Gemini
+            if (_srAvailable && (!srTranscripts || srTranscripts.length === 0 || srTranscripts.every(t => !t.trim()))) {{
                 showFeedback(word, {{ is_correct: false, transcript: '', feedback: '沒有偵測到語音內容，請對著麥克風清楚地唸出句子。' }});
                 renderHistory();
                 setStatus('再唸一次...');
