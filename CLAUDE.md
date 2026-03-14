@@ -62,6 +62,15 @@ artifacts/{APP_ID}/users/{student_id}/sentence_progress/{md5}  # 句型進度
 - **深色模式**：偵測父頁面 `document.body` 背景色亮度，動態切換 CSS class
 - **進度格式**：`completion_count`（輪數）+ `rounds` 陣列（每輪詳細結果）
 
+## UI/UX
+- **確認對話框**：所有危險操作用 `@st.dialog` 二次確認（刪除使用者、取消 Premium、刪除句型/單字集、清除進度、刪除單字）
+- **手機適配**：全域 CSS 注入（縮減 padding、按鈕最小高度 44px、表格水平捲動）
+- **iOS Safari**：iframe 需 `allow="microphone; autoplay"`；TTS 需 user gesture 解鎖；SpeechRecognition 在 iframe 不可用（`_srAvailable` 標記）
+- **刪除按鈕**：不使用 `type="primary"`，與儲存按鈕視覺區分
+- **排行榜**：當前使用者黃色底色高亮 + 👈 標記
+- **慶祝動畫**：測驗滿分 `st.balloons()`；口說完成一輪 emoji confetti
+- **排行榜資料**：JS 完成一輪後寫入 `sentence_stats`；修復腳本 `fix_sentence_stats.py` 可重建
+
 ## Gotchas
 - 新用戶 `sync_vocab_from_db(init_if_empty=False)` — 不自動建立預設單字
 - `pending_items`（文字 AI）和 `pending_ocr_items`（圖片 OCR）分開存，避免互相覆蓋
@@ -70,6 +79,7 @@ artifacts/{APP_ID}/users/{student_id}/sentence_progress/{md5}  # 句型進度
 - 舊資料向後相容：`.get("plan")` 預設 `"free"`、`.get("is_premium", False)` 預設免費
 - 公用單字集資料存為單一文件（words 陣列 ~200KB），不是每個單字一個文件
 - 句型口說完成一輪後 `completed_options` 重置為空，儀表板以 `completion_count` 為準
+- `sentence_stats` 是快取：JS 在完成一輪時更新，真實資料在 `sentence_progress` 子集合
 
 ## 詳細規格
 完整資料模型、設計決策、邊界處理、安全分析等詳見 `SPEC.md`

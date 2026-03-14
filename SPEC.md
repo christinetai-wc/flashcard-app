@@ -1,7 +1,7 @@
 # Flashcard Pro 雲端版 — Software Specification
 
-> **版本日期：** 2026-03-08
-> **主程式版本：** streamlit_app.py (2,304 行) + admin_app.py (753 行)
+> **版本日期：** 2026-03-14
+> **主程式版本：** streamlit_app.py (~2,370 行) + admin_app.py (~800 行)
 > **技術棧：** Streamlit + Google Firestore + Gemini AI + LINE Messaging API
 
 ---
@@ -22,7 +22,8 @@
 | `admin_app.py` | 753 | 後台管理系統（教師端） |
 | `system_prompt.md` | 12 | Gemini 單字解析 Prompt 模板 |
 | `pronunciation_feedback_prompt.md` | 42 | Gemini 語音辨識 Prompt 模板（舊版，新版 prompt 內嵌於 drill_component.py） |
-| `drill_component.py` | ~600 | 句型口說 JS 元件產生器（TTS + 錄音 + VAD + Gemini + Firestore） |
+| `drill_component.py` | ~850 | 句型口說 JS 元件產生器（TTS + 錄音 + VAD + Gemini + Firestore） |
+| `fix_sentence_stats.py` | ~123 | 排行榜統計修復腳本（從 sentence_progress 重建 sentence_stats） |
 | `drill_build/index.html` | ~300 | 句型口說 Streamlit custom component 版（備用） |
 | `requirements.txt` | 7 | Python 依賴 |
 | `CLAUDE.md` | ~62 | Claude 操作指引 |
@@ -184,6 +185,7 @@ client_email = "..."
 - 判定邏輯：`ans in Chinese_1 or Chinese_1 in ans`
 - 答對/答錯即時更新 Firestore + SRS 參數（`compute_srs_update()`）
 - 測驗結束顯示得分 + 錯題回顧
+- **慶祝**：滿分 `st.balloons()` + 鼓勵訊息
 
 #### 3.3.3 例句連連看
 - 從有例句的單字中抽 5 個（正確率低的優先）
@@ -191,6 +193,7 @@ client_email = "..."
 - 6 個選項（5 正確 + 1 干擾項）
 - 使用 `st.form` 一次提交
 - 答對/答錯更新 `Correct` / `Total`
+- **慶祝**：全對 `st.balloons()`
 
 ### 3.4 句型口說練習（`句型口說` 頁面）
 
@@ -209,6 +212,9 @@ client_email = "..."
 - **流程：** 按「開始練習」→ 逐個選項：TTS 示範 → 錄音 + VAD 偵測說完 → 預篩 → AI 判讀 → 回饋 → 下一個
 - **動態 VAD：** 錄音前偵測 0.5 秒環境底噪，門檻 = `max(12, 底噪×1.5)`；最長錄音 10 秒保底
 - **深色模式：** 偵測父頁面 `document.body` 背景色亮度，動態加 `body.dark` / `body.light` class
+- **iOS Safari 相容：** iframe 動態加 `allow="microphone; autoplay"`；TTS user gesture 解鎖（靜音播放 + 8s timeout）；SR 不可用時 `_srAvailable=false` 跳過預篩
+- **排行榜更新：** `updateSentenceStats()` 完成一輪後更新 user doc 的 `sentence_stats`；首次完成才遞增 `completed`
+- **慶祝動畫：** 完成一輪後 emoji confetti（JS CSS animation）
 
 #### 3.4.3 AI 判讀（額度控管 + 預篩 + 多模型降級 + 語音辨識 fallback）
 
@@ -270,16 +276,18 @@ client_email = "..."
 - 從所有使用者的 `sentence_stats` 彙整
 - 按句型書分組，完成率降序 → 完成數降序
 - 前三名 🥇🥈🥉
+- **當前使用者高亮**：黃色底色 + 👈 標記
 - 含刷新按鈕
+- **資料來源**：`sentence_stats` 為快取，由 JS `updateSentenceStats()` 在完成一輪時更新；`fix_sentence_stats.py` 可從 `sentence_progress` 重建
 
 #### 3.5.3 單字學習 Tab
 - 三個 Metric：單字數、覆蓋率、正確率
 - 單字明細表
 
 #### 3.5.4 句型練習 Tab
-- 三個 Metric：總句數、已練習（N/M）、累計輪數
+- 三個 Metric：總句數、已練習（N/M）、累計輪數（2×2 排列）
 - 進度明細表：分類、句型、輪數、熟練度（⭐/⭐⭐/⭐⭐⭐）
-- 清除紀錄按鈕
+- 清除紀錄按鈕（需 `@st.dialog` 確認）
 
 #### 3.5.1 個人戰績表 — 句型書進度
 - 堆疊進度條：🟢 熟練（3 輪以上）/ 🟡 練習中（1~2 輪）/ ⚪ 未練習
@@ -291,14 +299,14 @@ client_email = "..."
 #### 3.6.1 學生帳號管理
 - 新增（姓名、學號、密碼、代表色）
 - 編輯（學號、代表色、重設密碼）
-- 刪除
+- 刪除（`@st.dialog` 確認）
 - 使用者總覽表（含 plan 欄位）
 
 #### 3.6.2 訂閱管理
 - **費用：** NT$300/月
 - **全班總覽表：** 姓名、學號、訂閱狀態（💎Premium/⚠️已過期/🆓免費）、備註
 - **開通 Premium：** 選擇天數（30/60/90/180/365）+ 備註（如收款紀錄）；未過期時從現有到期日延長
-- **取消 Premium：** 立即降級為 free，備註加上 `[已取消]` 前綴
+- **取消 Premium：** 立即降級為 free，備註加上 `[已取消]` 前綴（`@st.dialog` 確認）
 - **未來規劃：** 20+ 付費用戶後考慮串接藍新定期定額自動扣款
 
 #### 3.6.3 AI 用量統計
@@ -652,6 +660,11 @@ def is_premium(user_info):
 | SRS 欄位型態不一致 | `int()` / `float()` 強制轉換舊資料 |
 | 公用單字集匯入重複 | 同 CSV 匯入，比對 English 欄位跳過 |
 | 舊單字無 SRS 欄位 | `.get('srs_interval', 0)` 等預設值，向後相容 |
+| iOS iframe 麥克風 | JS 動態加 `allow="microphone; autoplay"` |
+| iOS TTS 無聲 | user gesture 同步播放靜音語音解鎖 + 8s timeout |
+| iOS SR 不可用 | `_srAvailable` 旗標，預篩只在 SR 可用時啟用 |
+| 危險操作誤觸 | 所有刪除/清除用 `@st.dialog` 二次確認 |
+| 排行榜無資料 | `fix_sentence_stats.py` 修復腳本重建 |
 
 ### 潛在風險
 

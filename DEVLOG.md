@@ -56,6 +56,26 @@
 - 錄音前偵測 0.5 秒環境底噪，門檻 = max(12, 底噪×1.5)，解決噪音環境斷不了句
 - 最長錄音 10 秒保底
 
+### iOS Safari 相容性修復
+- 移除未使用的 `streamlit_mic_recorder` import（造成 Streamlit Cloud 崩潰）
+- iframe 加 `allow="microphone; autoplay"` 屬性（JS 動態設定）
+- TTS 需 user gesture 解鎖：`startDrill()` 同步播放靜音語音 + 8 秒 timeout fallback
+- SpeechRecognition 在 Safari iframe 不可用，加 `_srAvailable` 旗標，預篩只在 SR 可用時啟用
+
+### UI/UX 改善
+- 所有危險操作加 `@st.dialog` 確認對話框（6 處：刪除使用者、取消 Premium、刪除句型、刪除單字集、清除句型進度、刪除單字）
+- 全域手機適配 CSS（縮減 padding、按鈕最小高度 44px、表格水平捲動）
+- 刪除按鈕不使用 `type="primary"`，與儲存/確認按鈕視覺區分
+- 排行榜當前使用者黃色底色高亮 + 👈 標記
+- 測驗滿分 `st.balloons()`、連連看全對 `st.balloons()`
+- 口說完成一輪 emoji confetti 動畫
+- 儀表板指標從 4 欄改為 2×2 排列
+
+### 排行榜統計修復
+- JS `updateSentenceStats()` — 完成一輪後更新 user doc 的 `sentence_stats.{datasetId}`
+- 首次完成（`completionCount === 0`）才遞增 `completed` 計數
+- 新增 `fix_sentence_stats.py` 修復腳本 — 從 `sentence_progress` 重建所有使用者的排行榜統計
+
 ## 2026-03-08
 
 ### CSV 匯入/匯出 + 重複檢查
