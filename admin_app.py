@@ -277,7 +277,7 @@ if menu == "👥 學生帳號管理":
                 with col_del:
                     st.subheader("危險區域")
                     st.write("刪除後該使用者將無法登入。")
-                    if st.button(f"🗑️ 刪除使用者 {selected_user_name}", type="primary"):
+                    if st.button(f"🗑️ 刪除使用者 {selected_user_name}"):
                         st.session_state._confirm_delete_user = selected_user_name
                         confirm_delete_user()
     
@@ -670,7 +670,7 @@ elif menu == "📝 編輯現有句型書":
             target_path = f"{SENTENCE_DATA_BASE_PATH}/{selected_bid}"
             
             # 刪除功能
-            if col_del.button("🗑️ 刪除選取項目", type="primary"):
+            if col_del.button("🗑️ 刪除選取項目"):
                 if "Select" in edited_df.columns:
                     edited_df["Select"] = edited_df["Select"].fillna(False)
                     to_delete_df = edited_df[edited_df["Select"] == True]

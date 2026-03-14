@@ -22,7 +22,8 @@ def _get_firestore_token():
 def generate_drill_html(template, options, completion_count, api_key, api_url,
                         template_hash, dataset_id, firestore_doc_path,
                         completed_options=None, user_doc_path=None,
-                        drill_remaining=-1):
+                        drill_remaining=-1,
+                        dataset_name="", total_sentences=0):
     """產生句型口說練習的完整 HTML/JS/CSS 元件
 
     firestore_doc_path: e.g. "artifacts/flashcard-pro-v1/users/xxx/sentence_progress/abc123"
@@ -49,6 +50,8 @@ def generate_drill_html(template, options, completion_count, api_key, api_url,
         "firestoreDocPath": firestore_doc_path,
         "firestoreUserDocPath": user_doc_path or "",
         "drillRemaining": drill_remaining,
+        "datasetName": dataset_name,
+        "totalSentences": total_sentences,
     }, ensure_ascii=False)
 
     return f"""
@@ -127,6 +130,12 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
 .drill-complete .stars {{ font-size:2rem; margin:8px 0; }}
 .drill-summary {{ text-align:left; margin:12px auto; max-width:400px; }}
 .summary-row {{ display:flex; justify-content:space-between; padding:6px 0; font-size:0.9rem; }}
+
+/* 完成慶祝動畫 */
+@keyframes celebrate {{ 0% {{ transform:scale(0.5); opacity:0; }} 50% {{ transform:scale(1.1); }} 100% {{ transform:scale(1); opacity:1; }} }}
+.drill-complete.show {{ animation: celebrate 0.5s ease-out; }}
+.confetti {{ position:fixed; top:-10px; font-size:1.5rem; animation: fall linear forwards; pointer-events:none; z-index:999; }}
+@keyframes fall {{ to {{ top:100vh; opacity:0; }} }}
 
 /* 手機適配 */
 @media (max-width: 480px) {{
@@ -600,6 +609,48 @@ Return JSON:
         }} catch(e) {{ console.warn('Usage record error:', e); }}
     }}
 
+    // 更新排行榜統計（sentence_stats.{datasetId}）
+    async function updateSentenceStats() {{
+        if (!CFG.firestoreUserDocPath || !CFG.datasetId || !CFG.totalSentences) return;
+        const userUrl = `https://firestore.googleapis.com/v1/projects/${{CFG.firestoreProject}}/databases/(default)/documents/${{CFG.firestoreUserDocPath}}`;
+        try {{
+            const res = await fetch(userUrl, {{
+                headers: {{ 'Authorization': 'Bearer ' + CFG.firestoreToken }}
+            }});
+            let currentCompleted = 0;
+            if (res.ok) {{
+                const doc = await res.json();
+                const statsMap = doc.fields?.sentence_stats?.mapValue?.fields;
+                const ds = statsMap?.[CFG.datasetId]?.mapValue?.fields;
+                if (ds?.completed) currentCompleted = parseInt(ds.completed.integerValue || '0');
+            }}
+            // 只有這句是第一次完成（之前 completionCount=0）才 +1
+            const isFirstComplete = CFG.completionCount === 0;
+            const newCompleted = isFirstComplete
+                ? Math.min(currentCompleted + 1, CFG.totalSentences)
+                : currentCompleted;
+            const now = new Date().toISOString();
+            const fields = {{
+                sentence_stats: {{ mapValue: {{ fields: {{
+                    [CFG.datasetId]: {{ mapValue: {{ fields: {{
+                        name: {{ stringValue: CFG.datasetName || CFG.datasetId }},
+                        total: {{ integerValue: String(CFG.totalSentences) }},
+                        completed: {{ integerValue: String(newCompleted) }},
+                        last_active: {{ stringValue: now }}
+                    }} }} }}
+                }} }} }}
+            }};
+            await fetch(userUrl + '?updateMask.fieldPaths=sentence_stats.' + CFG.datasetId, {{
+                method: 'PATCH',
+                headers: {{
+                    'Authorization': 'Bearer ' + CFG.firestoreToken,
+                    'Content-Type': 'application/json',
+                }},
+                body: JSON.stringify({{ fields }})
+            }});
+        }} catch(e) {{ console.warn('Stats update error:', e); }}
+    }}
+
     // 每完成一個 option 就即時寫入，中途離開不丟進度
     async function saveOptionToFirestore(word) {{
         const doneList = CFG.options.filter(o => S.results[o]);
@@ -779,6 +830,8 @@ Return JSON:
         let newCount;
         try {{
             newCount = await saveRoundToFirestore();
+            // 更新排行榜統計
+            updateSentenceStats();
         }} catch(e) {{
             console.error('Save error:', e);
             newCount = CFG.completionCount + 1;
@@ -799,15 +852,35 @@ Return JSON:
         }}
 
         $('drill-complete').style.display = 'block';
+        $('drill-complete').className = 'drill-complete show';
+        // 全部一次過關的特殊訊息
+        const allFirstTry = CFG.options.every(o => S.results[o]?.tries === 1);
+        const completeTitle = allFirstTry ? '🏆 完美通關！全部一次過關！' : '🎉 本輪完成！';
         $('drill-complete').innerHTML = `
-            <h2>🎉 本輪完成！</h2>
+            <h2>${{completeTitle}}</h2>
             <div class="stars">${{stars || '⭐'}}</div>
             <p>累計 ${{newCount}} 輪 ${{nextMsg}}</p>
             <div class="drill-summary">${{summaryHtml}}</div>
         `;
         setStatus('✅ 成績已儲存');
+        // 慶祝灑花
+        launchConfetti();
 
         if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+    }}
+
+    function launchConfetti() {{
+        const emojis = ['🎉','🎊','⭐','✨','🌟','💫','🏆'];
+        for (let i = 0; i < 20; i++) {{
+            const el = document.createElement('div');
+            el.className = 'confetti';
+            el.textContent = emojis[Math.floor(Math.random() * emojis.length)];
+            el.style.left = Math.random() * 100 + 'vw';
+            el.style.animationDuration = (2 + Math.random() * 2) + 's';
+            el.style.animationDelay = Math.random() * 1 + 's';
+            document.body.appendChild(el);
+            setTimeout(() => el.remove(), 5000);
+        }}
     }}
 
     function sleep(ms) {{ return new Promise(r => setTimeout(r, ms)); }}

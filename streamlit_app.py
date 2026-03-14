@@ -25,14 +25,11 @@ except ImportError:
 # --- 0. 設定與常數 ---
 st.set_page_config(page_title="Flashcard Pro 雲端版", page_icon="✨", layout="wide")
 
-# --- 手機適配 CSS ---
+# --- 全域 CSS（手機適配） ---
 st.markdown("""<style>
 @media (max-width: 640px) {
-    /* Streamlit 主區域減少左右 padding */
     .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
-    /* 按鈕最小觸擊面積 44px */
     .stButton > button { min-height: 44px; }
-    /* 資料表格允許橫向捲動 */
     .stDataFrame, .stTable { overflow-x: auto !important; }
 }
 </style>""", unsafe_allow_html=True)
@@ -1644,7 +1641,7 @@ else:
                     st.dataframe(pd.DataFrame(progress_table), use_container_width=True, hide_index=True)
                     
                     # --- 清除紀錄（需確認） ---
-                    if st.button("🗑️ 清除所有句型練習紀錄", type="primary"):
+                    if st.button("🗑️ 清除所有句型練習紀錄"):
                         st.session_state._confirm_clear_target = target_id
                         confirm_clear_sentence_progress()
 
@@ -1699,21 +1696,22 @@ else:
 
                     st.markdown(f"#### 📘 {book_name}")
 
+                    current_user = st.session_state.get("current_user_name", "")
                     for rank, s in enumerate(students_sorted, 1):
                         pct = int(s['rate'] * 100)
-                        # 前三名使用獎牌 emoji
-                        if rank == 1:
-                            rank_display = "🥇"
-                        elif rank == 2:
-                            rank_display = "🥈"
-                        elif rank == 3:
-                            rank_display = "🥉"
-                        else:
-                            rank_display = f"{rank}."
+                        if rank == 1: rank_display = "🥇"
+                        elif rank == 2: rank_display = "🥈"
+                        elif rank == 3: rank_display = "🥉"
+                        else: rank_display = f"{rank}."
+
+                        is_me = s['student'] == current_user
+                        row_style = "background: rgba(255,193,7,0.15); border-left: 3px solid #FFC107; padding-left: 6px; border-radius: 4px;" if is_me else ""
+                        name_style = "font-weight: 700;" if is_me else ""
+                        me_tag = " 👈" if is_me else ""
 
                         bar_html = f"""
-                        <div style="display: flex; align-items: center; margin-bottom: 6px; font-size: 0.9rem;">
-                            <div style="width: 80px; min-width: 80px;">{rank_display} {s['student']}</div>
+                        <div style="display: flex; align-items: center; margin-bottom: 6px; font-size: 0.9rem; {row_style}">
+                            <div style="width: 80px; min-width: 80px; {name_style}">{rank_display} {s['student']}{me_tag}</div>
                             <div style="flex-grow: 1; background-color: #e0e0e0; border-radius: 6px; height: 14px; margin: 0 10px; overflow: hidden;">
                                 <div style="width: {pct}%; background-color: #4CAF50; height: 100%;"></div>
                             </div>
@@ -1870,7 +1868,7 @@ else:
                     )
                     
                     to_delete = res[res["選取"] == True]["id"].tolist()
-                    if to_delete and st.button(f"刪除 ({len(to_delete)} 個)", type="primary"):
+                    if to_delete and st.button(f"🗑️ 刪除 ({len(to_delete)} 個)"):
                         st.session_state._confirm_delete_ids = to_delete
                         confirm_delete_vocab()
                 else: st.warning("無資料。")
@@ -2119,7 +2117,15 @@ else:
                             st.session_state.t_idx += 1; st.rerun()
                     auto_focus_input()
                 else:
-                    st.success(f"測驗得分：{st.session_state.t_score} / {len(st.session_state.test_pool)}")
+                    score = st.session_state.t_score
+                    total = len(st.session_state.test_pool)
+                    if score == total:
+                        st.balloons()
+                        st.success(f"🎉 滿分！{score} / {total}　太厲害了！")
+                    elif score >= total * 0.8:
+                        st.success(f"👏 測驗得分：{score} / {total}　表現很棒！")
+                    else:
+                        st.info(f"測驗得分：{score} / {total}　再多練習幾次吧！")
                     df_h = pd.DataFrame(st.session_state.quiz_history)
                     wrongs = df_h[df_h["is_correct"] == False]
                     if not wrongs.empty:
@@ -2225,7 +2231,13 @@ else:
                         else:
                             st.error(f"❌ {q['blanked'].replace('______', f'**{user_ans}**')} → 正確：**{q['answer']}**")
 
-                    st.metric("得分", f"{correct_count} / 5")
+                    if correct_count == 5:
+                        st.balloons()
+                        st.metric("得分", f"🎉 {correct_count} / 5 滿分！")
+                    elif correct_count >= 4:
+                        st.metric("得分", f"👏 {correct_count} / 5")
+                    else:
+                        st.metric("得分", f"{correct_count} / 5")
 
     elif menu == "句型口說":
         track_practice_time()
@@ -2340,6 +2352,8 @@ else:
             fs_doc_path = f"artifacts/{APP_ID}/users/{user_id}/sentence_progress/{template_hash}"
             user_doc_path = f"{USER_LIST_PATH}/{user_name}"
             drill_remaining = get_drill_remaining()
+            # 取得題庫全部句數（排行榜統計用）
+            all_sentences_for_stats = fetch_sentences_by_id(st.session_state.current_dataset_id)
             drill_html = generate_drill_html(
                 template=template,
                 options=options,
@@ -2352,6 +2366,8 @@ else:
                 completed_options=st.session_state.completed_options,
                 user_doc_path=user_doc_path,
                 drill_remaining=drill_remaining,
+                dataset_name=book_name,
+                total_sentences=len(all_sentences_for_stats),
             )
             html(drill_html, height=550, scrolling=True)
 
