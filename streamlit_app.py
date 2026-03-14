@@ -347,6 +347,8 @@ if "practice_last_active" not in st.session_state:
     st.session_state.practice_last_active = None
 if "practice_seconds_today" not in st.session_state:
     st.session_state.practice_seconds_today = 0
+if "practice_seconds_last_saved" not in st.session_state:
+    st.session_state.practice_seconds_last_saved = 0
 
 init_users_in_db()
 
@@ -1075,13 +1077,16 @@ def track_practice_time():
             st.session_state.practice_seconds_today += delta
 
 def save_practice_time():
-    """將今日累計秒數寫入 Firestore"""
-    seconds = int(st.session_state.get('practice_seconds_today', 0))
-    if seconds <= 0 or not db: return
+    """將新增的練習秒數以 Increment 寫入 Firestore（避免覆蓋）"""
+    total = int(st.session_state.get('practice_seconds_today', 0))
+    last_saved = int(st.session_state.get('practice_seconds_last_saved', 0))
+    delta = total - last_saved
+    if delta <= 0 or not db: return
     today_str = str(date.today())
     try:
         user_ref = db.collection(USER_LIST_PATH).document(st.session_state.current_user_name)
-        user_ref.update({f"practice_time.{today_str}": seconds})
+        user_ref.set({"practice_time": {today_str: firestore.Increment(delta)}}, merge=True)
+        st.session_state.practice_seconds_last_saved = total
     except: pass
 # ── 練習時長追蹤結束 ─────────────────────────────────────────────
 
@@ -1212,6 +1217,7 @@ def attempt_login():
                 # 載入今日已累計練習秒數
                 existing_time = user_record.get('practice_time', {}).get(str(date.today()), 0)
                 st.session_state.practice_seconds_today = existing_time
+                st.session_state.practice_seconds_last_saved = existing_time
                 st.session_state.practice_last_active = None
                 # 記住登入資訊到 Cookie (30 天有效)
                 cookie_controller.set("remembered_user", input_name, max_age=30*24*60*60)

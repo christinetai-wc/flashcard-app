@@ -613,6 +613,35 @@ Return JSON:
         }} catch(e) {{ console.warn('Usage record error:', e); }}
     }}
 
+    // 練習時間寫入 Firestore（使用 fieldTransforms.increment，原子操作）
+    async function savePracticeTime(seconds) {{
+        if (!CFG.firestoreUserDocPath || seconds <= 0) return;
+        const today = new Date().toISOString().slice(0, 10);
+        const projectId = CFG.firestoreProject;
+        const docPath = CFG.firestoreUserDocPath;
+        const commitUrl = `https://firestore.googleapis.com/v1/projects/${{projectId}}/databases/(default)/documents:commit`;
+        try {{
+            await fetch(commitUrl, {{
+                method: 'POST',
+                headers: {{
+                    'Authorization': 'Bearer ' + CFG.firestoreToken,
+                    'Content-Type': 'application/json',
+                }},
+                body: JSON.stringify({{
+                    writes: [{{
+                        transform: {{
+                            document: `projects/${{projectId}}/databases/(default)/documents/${{docPath}}`,
+                            fieldTransforms: [{{
+                                fieldPath: `practice_time.${{today}}`,
+                                increment: {{ integerValue: String(Math.round(seconds)) }}
+                            }}]
+                        }}
+                    }}]
+                }})
+            }});
+        }} catch(e) {{ console.warn('Practice time save error:', e); }}
+    }}
+
     // 更新排行榜統計（sentence_stats）
     async function updateSentenceStats() {{
         if (!CFG.firestoreUserDocPath || !CFG.datasetId || !CFG.totalSentences) return;
@@ -764,6 +793,10 @@ Return JSON:
                 setStatus(`✅ ${{word}} — 通過！`);
                 // 即時存入 Firestore，中途離開不丟進度
                 try {{ await saveOptionToFirestore(word); }} catch(e) {{ console.warn('Save option error:', e); }}
+                // 定期儲存練習時間（每 10 秒以上才寫一次）
+                const elapsed = (Date.now() - S.drillStartTime) / 1000;
+                const delta = elapsed - S.practiceTimeSaved;
+                if (delta > 10) {{ savePracticeTime(delta); S.practiceTimeSaved = elapsed; }}
             }} else {{
                 setStatus(`再唸一次 ${{word}}...`);
             }}
@@ -778,6 +811,8 @@ Return JSON:
         S.phase = 'running';
         unlockTTS();  // iOS: 在使用者手勢中同步解鎖 TTS
         S.results = {{}};  S.tries = {{}};  S.history = [];
+        S.drillStartTime = Date.now();
+        S.practiceTimeSaved = 0;
         $('drill-history').innerHTML = '';
 
         // 標記已完成的 option（續練時跳過）
@@ -834,6 +869,10 @@ Return JSON:
             newCount = await saveRoundToFirestore();
             // 更新排行榜統計
             updateSentenceStats();
+            // 儲存剩餘練習時間
+            const finalElapsed = (Date.now() - S.drillStartTime) / 1000;
+            const finalDelta = finalElapsed - S.practiceTimeSaved;
+            if (finalDelta > 0) await savePracticeTime(finalDelta);
         }} catch(e) {{
             console.error('Save error:', e);
             newCount = CFG.completionCount + 1;

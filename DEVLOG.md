@@ -6,6 +6,11 @@
 - 移除 AI 回饋閃現框，只保留下方歷史紀錄
 - 錄音中新增「✋ 我說完了」手動停止按鈕（VAD + 手動雙軌）
 
+### 練習時間追蹤修復
+- Python `save_practice_time()` 改用 `firestore.Increment(delta)`，避免覆蓋
+- JS drill 元件新增計時：`startDrill` 記錄開始時間，每個 option 通過後定期存入，完成一輪存剩餘
+- JS 使用 Firestore `commit` API 的 `fieldTransforms.increment`（原子操作）
+
 ### Gemini API key 網域限制
 - GCP Console 設定 HTTP Referrer 限制（僅允許 `flashcard-techeasy.streamlit.app` 和 `localhost:8501`）
 - Python server 端所有 Gemini 請求加上 `Referer` header
