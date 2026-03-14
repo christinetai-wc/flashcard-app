@@ -169,6 +169,7 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
         optIdx: 0, phase: 'idle', tries: {{}}, results: {{}},
         stream: null, analyser: null, audioCtx: null, history: [],
         drillUsed: 0,  // 本次 session 已用的 AI 判讀次數
+        vadThreshold: CFG.silenceThreshold,  // VAD 門檻，startDrill 時偵測一次
     }};
 
     // === UI ===
@@ -266,11 +267,8 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
     }}
 
     function recordUntilSilence() {{
-        return new Promise(async (resolve) => {{
-            // 動態門檻：底噪 × 1.5，至少 CFG.silenceThreshold
-            const noiseFloor = await measureNoiseFloor();
-            const threshold = Math.max(CFG.silenceThreshold, noiseFloor * 1.5);
-            console.log('[VAD] noise floor:', noiseFloor.toFixed(1), 'threshold:', threshold.toFixed(1));
+        return new Promise((resolve) => {{
+            const threshold = S.vadThreshold;
 
             const chunks = [];
             let mimeType = 'audio/webm';
@@ -703,6 +701,11 @@ Return JSON:
         try {{
             await initAudio();
             initVolBars();
+            // 偵測一次環境底噪，設定 VAD 門檻
+            setStatus('🔇 偵測環境音量...');
+            const noiseFloor = await measureNoiseFloor();
+            S.vadThreshold = Math.max(CFG.silenceThreshold, noiseFloor * 1.5);
+            console.log('[VAD] noise floor:', noiseFloor.toFixed(1), 'threshold:', S.vadThreshold.toFixed(1));
         }} catch (e) {{
             setStatus('❌ 無法存取麥克風，請允許麥克風權限後重試');
             $('start-btn').disabled = false;
