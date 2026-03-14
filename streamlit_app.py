@@ -14,7 +14,6 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 from streamlit.components.v1 import html
 from streamlit_cookies_controller import CookieController
-from streamlit_mic_recorder import mic_recorder
 from drill_component import generate_drill_html
 
 # --- 新增：嘗試匯入 SpeechRecognition (保留供其他用途，但主功能改用 Gemini Audio) ---
