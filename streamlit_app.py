@@ -38,6 +38,7 @@ st.markdown("""<style>
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+GEMINI_HEADERS = {"Referer": "https://flashcard-techeasy.streamlit.app/"}
 
 # 預設單字內容 (Fallback)
 INITIAL_VOCAB = [
@@ -703,7 +704,7 @@ def check_audio_batch(audio_file, template, options_list):
     token_count = 0
     try:
         print(f"[Gemini Speech] Calling API... model={GEMINI_MODEL}")
-        res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=gemini_payload, timeout=30)
+        res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=gemini_payload, headers=GEMINI_HEADERS, timeout=30)
         print(f"[Gemini Speech] API status={res.status_code}")
         if res.status_code != 200:
             print(f"[Gemini Speech] API error body: {res.text[:500]}")
@@ -838,7 +839,7 @@ Requirements:
 
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
-        res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, timeout=30)
+        res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, headers=GEMINI_HEADERS, timeout=30)
         if res.status_code == 200:
             res_json = res.json()
             text = res_json['candidates'][0]['content']['parts'][0]['text']
@@ -918,7 +919,7 @@ If no English vocabulary words are found in the image, return an empty response.
 
     payload = {"contents": [{"parts": parts}]}
     try:
-        res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, timeout=60)
+        res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, headers=GEMINI_HEADERS, timeout=60)
         if res.status_code == 200:
             res_json = res.json()
             text = res_json['candidates'][0]['content']['parts'][0]['text']
