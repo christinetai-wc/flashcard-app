@@ -1,5 +1,52 @@
 # Development Log
 
+## 2026-03-14
+
+### 句型口說全面重構 — JS 自包含元件
+- 移除舊版 Streamlit 錄音 + check_audio_batch 架構，改為 `drill_component.py` 產生的 JS 元件
+- 流程：按開始 → TTS 示範 → 錄音 + VAD 自動偵測說完 → AI 判讀 → 回饋，全程不離開 iframe
+- JS 直接呼叫 Gemini API（不經 Streamlit rerun），完成後直接用 Firestore REST API 寫入成績
+- Python 產生短期 service account access token 傳給 JS
+
+### AI 多模型降級策略
+- 僅 429（額度不足）或 404（模型不存在）時觸發降級
+- 順序：gemini-2.5-flash → gemini-2.0-flash → 瀏覽器 SpeechRecognition 文字比對
+- 同一段錄音不需要重唸，錄音時同步啟動 SpeechRecognition 備用
+- 其他錯誤不降級，直接回報失敗
+
+### Firestore 資料結構更新
+- `sentence_progress` 新增 `completion_count`（輪數）和 `rounds` 陣列（每輪結果含 tries/transcript/feedback）
+- `completed_options` 每輪完成後重置為空
+- 執行 `cleanup_sentence_progress.py` 清除舊格式資料
+
+### 儀表板更新
+- 句型練習 tab：移除「選項數」「已完成」「狀態」欄，改為「輪數」「熟練度」
+- 指標改為：總句數 / 已練習 / 累計輪數
+- 個人戰績表 stacked bar：改用 completion_count（3輪以上=熟練，1~2輪=練習中）
+- 智慧跳轉改用 `completion_count == 0` 判斷未練習
+
+### 深色模式適配
+- JS 元件偵測父頁面 body 背景色亮度，動態切換 dark/light CSS class
+- 所有文字、選項、回饋區顏色依主題自動調整
+
+### 判讀規則調整
+- 必須嘗試完整句子（只唸目標字不算通過）
+- 仍寬容冠詞替換、時態變化、發音不完美
+- 回饋語言：繁體中文
+
+### 語音預篩（省 token）
+- SpeechRecognition 沒辨識到文字時不送 Gemini，直接提示重唸
+- 防止小孩亂按或無效錄音浪費 API 額度
+
+### 逐題存入進度
+- 每個 option 通過後即時寫入 `completed_options` 到 Firestore
+- 中途離開再回來可續練（跳過已完成的 option，按鈕顯示「繼續練習」）
+- `completion_count` 仍等全部練完才 +1
+
+### AI Token 使用量記錄
+- JS 從 Gemini 回應 `usageMetadata.totalTokenCount` 取得 token 數
+- 寫入 Firestore `ai_usage.speech.{date}`，與 Python 端 `record_ai_usage` 同結構
+
 ## 2026-03-08
 
 ### CSV 匯入/匯出 + 重複檢查

@@ -14,6 +14,8 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 from streamlit.components.v1 import html
 from streamlit_cookies_controller import CookieController
+from streamlit_mic_recorder import mic_recorder
+from drill_component import generate_drill_html
 
 # --- 新增：嘗試匯入 SpeechRecognition (保留供其他用途，但主功能改用 Gemini Audio) ---
 try:
@@ -281,6 +283,8 @@ if "last_sentence_filter_sig" not in st.session_state:
     st.session_state.last_sentence_filter_sig = ""
 if "current_dataset_id" not in st.session_state:
     st.session_state.current_dataset_id = None # 記錄當前正在練習哪個題庫
+if "drill_completion_count" not in st.session_state:
+    st.session_state.drill_completion_count = 0
 # 練習時長追蹤
 if "practice_last_active" not in st.session_state:
     st.session_state.practice_last_active = None
@@ -402,19 +406,34 @@ def fetch_shared_vocab_words(set_id):
         return doc.to_dict().get("words", [])
     return []
 
+def get_star_display(count):
+    """根據完成輪數回傳星級顯示"""
+    if count >= 5: return "⭐⭐⭐"
+    if count >= 3: return "⭐⭐"
+    if count >= 1: return "⭐"
+    return ""
+
 def load_user_sentence_progress(template_hash):
     path = get_sentence_progress_path()
-    if not db or not path: return []
+    if not db or not path: return set(), 0
     doc = db.collection(path).document(template_hash).get()
     if doc.exists:
-        return set(doc.to_dict().get("completed_options", []))
-    return set()
+        data = doc.to_dict()
+        return set(data.get("completed_options", [])), int(data.get("completion_count", 0))
+    return set(), 0
 
 def fetch_all_user_sentence_progress():
     path = get_sentence_progress_path()
     if not db or not path: return {}
     docs = db.collection(path).stream()
-    return {d.id: d.to_dict().get("completed_options", []) for d in docs}
+    result = {}
+    for d in docs:
+        data = d.to_dict()
+        result[d.id] = {
+            "completed_options": data.get("completed_options", []),
+            "completion_count": int(data.get("completion_count", 0)),
+        }
+    return result
 
 # --- 新增：更新使用者統計摘要 ---
 def update_user_stats_summary(dataset_id):
@@ -474,7 +493,7 @@ def update_user_stats_summary(dataset_id):
     # 清除快取，確保排行榜更新
     fetch_users_list.clear()
 
-def save_user_sentence_progress(template_str, completed_list, dataset_id=None):
+def save_user_sentence_progress(template_str, completed_list, dataset_id=None, increment_count=False, round_data=None):
     """儲存使用者對某句型的練習進度，並標記來源題庫 ID"""
     path = get_sentence_progress_path()
     if not db or not path: return
@@ -484,13 +503,17 @@ def save_user_sentence_progress(template_str, completed_list, dataset_id=None):
         "completed_options": list(completed_list),
         "last_updated": firestore.SERVER_TIMESTAMP
     }
-    # 新增：記錄這是哪本題庫的進度，方便日後管理
     if dataset_id:
         data["dataset_id"] = dataset_id
-        
+    if increment_count:
+        data["completion_count"] = firestore.Increment(1)
+
+    # 追加 round 資料到 rounds 陣列
+    if round_data:
+        data["rounds"] = firestore.ArrayUnion([round_data])
+
     db.collection(path).document(template_hash).set(data, merge=True)
-    
-    # 同步更新統計摘要
+
     if dataset_id:
         update_user_stats_summary(dataset_id)
 
@@ -592,22 +615,30 @@ def check_audio_batch(audio_file, template, options_list):
         options_list=options_list
     )
 
-    # 讀取音訊 Bytes
+    # 讀取音訊 Bytes 並自動偵測格式
     audio_file.seek(0)
     audio_bytes = audio_file.read()
     encoded_audio = base64.b64encode(audio_bytes).decode('utf-8')
-    
+
+    # 根據檔頭判斷 MIME type
+    if audio_bytes[:4] == b'RIFF':
+        audio_mime = "audio/wav"
+    elif audio_bytes[:4] == b'OggS':
+        audio_mime = "audio/ogg"
+    else:
+        audio_mime = "audio/webm"  # 瀏覽器 MediaRecorder 預設格式
+
     # --- 嘗試 1：Gemini 多模態 (音訊直接輸入) ---
     ai_corrects = []
     ai_transcript = ""
     ai_feedback = ""
     gemini_success = False
-    
+
     gemini_payload = {
         "contents": [{
             "parts": [
                 {"text": prompt},
-                {"inline_data": {"mime_type": "audio/wav", "data": encoded_audio}}
+                {"inline_data": {"mime_type": audio_mime, "data": encoded_audio}}
             ]
         }],
         "generationConfig": {"responseMimeType": "application/json"}
@@ -1393,25 +1424,21 @@ else:
                         for cat in cats:
                             cat_sents = [s for s in b_sentences if s.get('Category') == cat]
                             tot = len(cat_sents)
-                            
-                            cnt_done = 0
-                            cnt_progress = 0
-                            
+
+                            cnt_mastered = 0  # 3輪以上（⭐⭐）
+                            cnt_practiced = 0  # 1~2輪
+
                             for s in cat_sents:
                                 h = hash_string(s['Template'])
-                                user_done = user_progress.get(h, [])
-                                s_opts = s.get('Options', [])
-                                
-                                if not s_opts: continue
-                                
-                                intersection = len(set(s_opts).intersection(set(user_done)))
-                                if intersection == len(s_opts):
-                                    cnt_done += 1
-                                elif intersection > 0:
-                                    cnt_progress += 1
-                            
-                            p_done = cnt_done / tot if tot > 0 else 0
-                            p_prog = cnt_progress / tot if tot > 0 else 0
+                                p_data = user_progress.get(h, {})
+                                rounds = p_data.get("completion_count", 0) if isinstance(p_data, dict) else 0
+                                if rounds >= 3:
+                                    cnt_mastered += 1
+                                elif rounds >= 1:
+                                    cnt_practiced += 1
+
+                            p_done = cnt_mastered / tot if tot > 0 else 0
+                            p_prog = cnt_practiced / tot if tot > 0 else 0
                             p_empty = 1 - p_done - p_prog
                             
                             c1, c2 = st.columns([2, 8])
@@ -1534,31 +1561,31 @@ else:
                     user_progress = fetch_all_user_sentence_progress()
                     
                     total_s_count = len(target_sentences)
-                    fully_completed_count = 0
-                    
+                    practiced_count = 0
+                    total_rounds = 0
+
                     progress_table = []
-                    
+
                     for s in target_sentences:
                         h = hash_string(s['Template'])
-                        user_done = user_progress.get(h, [])
-                        s_opts = s.get('Options', [])
-                        
-                        is_done = set(s_opts).issubset(set(user_done))
-                        if is_done: fully_completed_count += 1
-                        
+                        p_data = user_progress.get(h, {})
+                        rounds = p_data.get("completion_count", 0) if isinstance(p_data, dict) else 0
+                        if rounds > 0:
+                            practiced_count += 1
+                        total_rounds += rounds
+
+                        stars = get_star_display(rounds)
                         progress_table.append({
                             "分類": s.get('Category', ''),
                             "句型": s['Template'],
-                            "選項數": len(s_opts),
-                            "已完成": len(set(s_opts).intersection(set(user_done))),
-                            "狀態": "✅" if is_done else "💪"
+                            "輪數": rounds,
+                            "熟練度": stars if stars else "—",
                         })
-                    
+
                     sc1, sc2, sc3 = st.columns(3)
                     sc1.metric("總句數", total_s_count)
-                    sc2.metric("已完成句數", fully_completed_count)
-                    s_rate = (fully_completed_count / total_s_count * 100) if total_s_count > 0 else 0
-                    sc3.metric("完成率", f"{s_rate:.1f}%")
+                    sc2.metric("已練習", f"{practiced_count}/{total_s_count}")
+                    sc3.metric("累計輪數", total_rounds)
 
                     st.divider()
                     st.dataframe(pd.DataFrame(progress_table), use_container_width=True, hide_index=True)
@@ -2183,10 +2210,8 @@ else:
                         for c in cats:
                             combined_options.append(f"{display_name} | {c}")
 
-            # 直接使用 key="sentence_filter" 從 session state 取值，不使用 index
             selection = st.selectbox("選擇練習範圍：", combined_options, key="sentence_filter")
 
-            # 解析選擇 — 去掉可能的 🔒 標記
             clean_selection = selection.replace(" 🔒", "")
 
             if " (全部)" in clean_selection:
@@ -2197,7 +2222,6 @@ else:
             else:
                 book_name, category = clean_selection.split(" | ")
                 target_id = book_map.get(book_name)
-                # 記錄當前題庫 ID 供儲存時使用
                 st.session_state.current_dataset_id = target_id
                 all_book_sentences = fetch_sentences_by_id(target_id)
                 current_sentences = [s for s in all_book_sentences if s.get('Category') == category]
@@ -2210,83 +2234,43 @@ else:
 
         if not current_sentences: st.info("此範圍內無題目。")
         else:
-            # 智慧跳轉：如果是剛進入頁面（或切換題庫），嘗試跳到第一題未完成的
-            # 我們用 session_state.last_sentence_filter_sig 來判斷是否切換了題庫
+            # 智慧跳轉：切換題庫時跳到第一個未完成的題目
             current_filter_sig = selection
             if st.session_state.last_sentence_filter_sig != current_filter_sig:
-                # 切換了題庫，尋找第一個未完成的
                 user_progress = fetch_all_user_sentence_progress()
                 found_idx = 0
                 for i, s in enumerate(current_sentences):
                     h = hash_string(s['Template'])
-                    done = user_progress.get(h, [])
-                    opts = s.get('Options', [])
-                    if not set(opts).issubset(set(done)):
+                    p_data = user_progress.get(h, {})
+                    rounds = p_data.get("completion_count", 0) if isinstance(p_data, dict) else 0
+                    if rounds == 0:
                         found_idx = i
                         break
                 st.session_state.sentence_idx = found_idx
-                st.session_state.completed_options = set() # 重置當前題目的完成狀態
+                st.session_state.completed_options = set()
                 st.session_state.last_sentence_filter_sig = current_filter_sig
                 if "loaded_hash" in st.session_state: del st.session_state.loaded_hash
-            
-            # 確保索引不越界
+
             if st.session_state.sentence_idx >= len(current_sentences):
                 st.session_state.sentence_idx = 0
-            
+
             curr_sent = current_sentences[st.session_state.sentence_idx]
             template = curr_sent['Template']
             options = curr_sent['Options']
-            
+
             template_hash = hash_string(template)
             if "loaded_hash" not in st.session_state or st.session_state.loaded_hash != template_hash:
-                st.session_state.completed_options = load_user_sentence_progress(template_hash)
+                loaded_opts, loaded_count = load_user_sentence_progress(template_hash)
+                st.session_state.completed_options = loaded_opts
+                st.session_state.drill_completion_count = loaded_count
                 st.session_state.loaded_hash = template_hash
+            if "drill_completion_count" not in st.session_state:
+                st.session_state.drill_completion_count = 0
 
-            progress_placeholder = st.empty()
-            def render_progress():
-                c = len(st.session_state.completed_options); t = len(options)
-                progress_placeholder.progress(c / t, text=f"完成進度: {c}/{t}")
-            render_progress()
-            
-            st.subheader(f"題目 ({curr_sent.get('Category', '一般')})")
-            st.markdown(f"### {template}", unsafe_allow_html=True)
-            
-            options_placeholder = st.empty()
-            def render_options_status():
-                with options_placeholder.container():
-                    st.caption("請一口氣唸出包含下方所有單字的句子：")
-                    cols = st.columns(len(options))
-                    for i, opt in enumerate(options):
-                        if opt in st.session_state.completed_options: cols[i].success(f"✅ {opt}")
-                        else: cols[i].info(f"{opt}")
-            render_options_status()
-            
-            st.divider()
-            st.write("請按下錄音，並嘗試唸出所有句子 (例如: This test is very important. This rule is...)")
-            audio_val = st.audio_input("🔴 點擊開始錄音", key=f"rec_{st.session_state.sentence_idx}")
-            
-            if audio_val:
-                with st.spinner("AI 正在分析您的錄音..."):
-                    remaining = [opt for opt in options if opt not in st.session_state.completed_options]
-                    if not remaining: st.success("本題已全部完成！")
-                    else:
-                        result = check_audio_batch(audio_val, template, options)
-                        new_corrects = result.get("correct_options", [])
-                        if new_corrects:
-                            for nc in new_corrects:
-                                if nc in options: st.session_state.completed_options.add(nc)
-                            save_user_sentence_progress(template, st.session_state.completed_options, dataset_id=st.session_state.current_dataset_id)
-                            save_practice_time()
-                            st.success(f"🎉 辨識出：{', '.join(new_corrects)}")
-                            render_options_status(); render_progress()
-                            if len(st.session_state.completed_options) == len(options): st.balloons()
-                        else:
-                            st.warning("🤔 似乎沒有辨識到新的正確句子，請再試一次。")
-                        with st.expander("查看完整聽寫內容", expanded=True):
-                            st.write(result.get("heard"))
-                            st.caption(f"AI 建議: {result.get('feedback')}")
-            
-            st.write("")
+            # 題目資訊
+            st.caption(f"題目 {st.session_state.sentence_idx + 1}/{len(current_sentences)}　({curr_sent.get('Category', '一般')})")
+
+            # 上一題 / 下一題 導覽
             c1, c2 = st.columns(2)
             if c1.button("← 上一題", use_container_width=True):
                 st.session_state.sentence_idx = (st.session_state.sentence_idx - 1) % len(current_sentences)
@@ -2298,7 +2282,26 @@ else:
                 st.session_state.completed_options = set()
                 del st.session_state.loaded_hash
                 st.rerun()
-            
+
+            # === JS 口說練習元件（直接寫 Firestore） ===
+            user_id = st.session_state.user_info["id"]
+            user_name = st.session_state.current_user_name
+            fs_doc_path = f"artifacts/{APP_ID}/users/{user_id}/sentence_progress/{template_hash}"
+            user_doc_path = f"{USER_LIST_PATH}/{user_name}"
+            drill_html = generate_drill_html(
+                template=template,
+                options=options,
+                completion_count=st.session_state.drill_completion_count,
+                api_key=GEMINI_API_KEY,
+                api_url=GEMINI_API_URL,
+                template_hash=template_hash,
+                dataset_id=st.session_state.current_dataset_id,
+                firestore_doc_path=fs_doc_path,
+                completed_options=st.session_state.completed_options,
+                user_doc_path=user_doc_path,
+            )
+            html(drill_html, height=650, scrolling=True)
+
             keyboard_bridge()
 
 st.divider()

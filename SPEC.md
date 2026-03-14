@@ -21,7 +21,9 @@
 | `streamlit_app.py` | 2,304 | 主應用程式（學生端） |
 | `admin_app.py` | 753 | 後台管理系統（教師端） |
 | `system_prompt.md` | 12 | Gemini 單字解析 Prompt 模板 |
-| `pronunciation_feedback_prompt.md` | 42 | Gemini 語音辨識 Prompt 模板 |
+| `pronunciation_feedback_prompt.md` | 42 | Gemini 語音辨識 Prompt 模板（舊版，新版 prompt 內嵌於 drill_component.py） |
+| `drill_component.py` | ~600 | 句型口說 JS 元件產生器（TTS + 錄音 + VAD + Gemini + Firestore） |
+| `drill_build/index.html` | ~300 | 句型口說 Streamlit custom component 版（備用） |
 | `requirements.txt` | 7 | Python 依賴 |
 | `CLAUDE.md` | ~62 | Claude 操作指引 |
 | `SPEC.md` | — | 本文件（軟體規格書） |
@@ -46,9 +48,8 @@ SpeechRecognition            # 本地語音辨識（備援）
 | 服務 | 用途 | 模型/版本 |
 |------|------|-----------|
 | Google Firestore | 資料持久化 | — |
-| Gemini API | 單字補全、語音辨識、OCR 圖片辨識 | `gemini-2.5-flash` |
-| Google Speech Recognition | 語音辨識備援 | — |
-| Web Speech API (瀏覽器) | TTS 文字轉語音 | — |
+| Gemini API | 單字補全、語音辨識、OCR 圖片辨識 | `gemini-2.5-flash`（口說元件自動降級：2.5→2.0→語音辨識） |
+| Web Speech API (瀏覽器) | TTS 文字轉語音 + SpeechRecognition 語音辨識 fallback | — |
 | LINE Messaging API | 學生付款通知老師 | Push Message |
 
 ### 2.4 Secrets 結構
@@ -194,38 +195,60 @@ client_email = "..."
 ### 3.4 句型口說練習（`句型口說` 頁面）
 
 - **練習時長追蹤：** 同單字練習，`track_practice_time()` 記錄持續時間
+- **教學法：** Substitution Drill（替換練習）— 同一句型反覆替換不同單字，建立口語肌肉記憶
 
 #### 3.4.1 題庫選擇與 Premium 門控
 - 從 Firestore `sentences` 目錄讀取所有題庫（含 `is_premium` 欄位）
 - 合併選單：`{書名} (全部)` / `{書名} | {分類}`
 - **付費句型書：** 選單顯示 🔒 圖示；免費用戶選擇後顯示升級提示並 `st.stop()`
-- **智慧跳轉：** 切換題庫時自動跳到第一個未全部完成的句型
+- **智慧跳轉：** 切換題庫時自動跳到第一個 `completion_count == 0` 的句型
 
-#### 3.4.2 練習流程
-1. 顯示句型模板（含 `___`）
-2. 所有選項列表（已完成 ✅ / 未完成）
-3. 錄音 → 送 AI 辨識 → 更新完成狀態
-4. 全部完成觸發 `st.balloons()`
+#### 3.4.2 練習流程（JS 自包含元件 `drill_component.py`）
+- 全程由 JS 控制，不依賴 Streamlit 的 request-response 循環
+- 嵌入方式：`st.components.v1.html()` iframe
+- **流程：** 按「開始練習」→ 逐個選項：TTS 示範 → 錄音 + VAD 偵測說完 → AI 判讀 → 回饋 → 下一個
+- **深色模式：** 偵測父頁面 `document.body` 背景色亮度，動態加 `body.dark` / `body.light` class
 
-#### 3.4.3 語音辨識雙重機制 (`check_audio_batch`)
+#### 3.4.3 AI 判讀（預篩 + 多模型降級 + 語音辨識 fallback）
 
-**Primary — Gemini 多模態 API：**
-- 音訊 Base64 + Prompt 送至 `gemini-2.5-flash`
-- Prompt 定義於 `pronunciation_feedback_prompt.md`
-- 80% 準確度門檻，允許小錯誤（冠詞替換、填充詞等）
-- 回傳 JSON：`{ transcript, correct_options, feedback }`
-- 大小寫容錯比對
+**預篩（零 token 成本）：**
+- 錄音時同步啟動瀏覽器 `SpeechRecognition`
+- **SpeechRecognition 完全沒辨識到文字** → 不送 Gemini，直接提示重唸（防止小孩亂按浪費額度）
 
-**Fallback — SpeechRecognition：**
-- 條件：Gemini 失敗或 `correct_options` 為空
-- `recognize_google(audio, language="en-US")` 轉錄
-- 字串比對：每個選項填入模板 → `normalize_text()` → 檢查包含關係
-- `normalize_text()`：移除標點、轉小寫、合併空白
+**降級策略（僅 429 額度不足 / 404 模型不存在觸發）：**
+1. `gemini-2.5-flash` — 音訊 + Prompt → JSON `{ is_correct, transcript, feedback }`
+2. `gemini-2.0-flash` — 同上
+3. **瀏覽器 `SpeechRecognition` 文字比對** — 用預篩階段已取得的辨識結果
 
-#### 3.4.4 進度追蹤
+- 同一段錄音不需要重唸，降級時直接用已錄好的音訊/辨識結果
+- `modelIdx` 記住當前可用模型，後續選項直接跳過已知不可用的
+- 其他錯誤（網路、解析等）不觸發降級，直接回報失敗讓學生重試
+
+**判讀規則：**
+- 學生必須嘗試完整句子（只唸目標字不算通過）
+- 寬容：冠詞替換、時態變化、發音不完美皆可接受
+- 回饋：繁體中文，指出發音問題並給建議
+
+**語音辨識 fallback 文字比對：**
+- 目標字必須出現 + 至少 40% 關鍵字匹配
+- 去除虛詞（a/an/the/is/are 等）後比對
+
+**Token 使用量記錄：**
+- Gemini 回應的 `usageMetadata.totalTokenCount` 由 JS 寫入 Firestore `ai_usage.speech.{date}`
+- 與 Python 端 `record_ai_usage()` 同結構，後台統計可正確彙整
+
+#### 3.4.4 Firestore 寫入
+- JS 直接用 Firestore REST API 寫入（Python 產生短期 service account access token）
+- **逐題存入：** 每個 option 通過後即時寫入 `completed_options`（中途離開不丟進度）
+- **整輪完成：** `completion_count` +1 → 追加 `rounds` 陣列 → `completed_options` 重置為空
+- 續練時：讀取 `completed_options` 跳過已完成的選項，按鈕顯示「繼續練習」
+
+#### 3.4.5 進度與星級
 - Document ID = 句型模板 MD5 hash
-- `completed_options` 陣列記錄已完成選項
-- 同步更新 `sentence_stats` 統計摘要（供排行榜用）
+- `completion_count`：累計完成輪數
+- `completed_options`：本輪已完成的選項（未完成一整輪時有值，完成後重置為空）
+- 星級：1 輪 ⭐ / 3 輪 ⭐⭐ / 5 輪 ⭐⭐⭐
+- 儀表板以 `completion_count` 為準（不看 `completed_options`）
 
 ### 3.5 學習儀表板（`學習儀表板` 頁面）
 
@@ -247,8 +270,12 @@ client_email = "..."
 - 單字明細表
 
 #### 3.5.4 句型練習 Tab
-- 三個 Metric：總句數、已完成、完成率
-- 進度明細表 + 清除紀錄按鈕
+- 三個 Metric：總句數、已練習（N/M）、累計輪數
+- 進度明細表：分類、句型、輪數、熟練度（⭐/⭐⭐/⭐⭐⭐）
+- 清除紀錄按鈕
+
+#### 3.5.1 個人戰績表 — 句型書進度
+- 堆疊進度條：🟢 熟練（3 輪以上）/ 🟡 練習中（1~2 輪）/ ⚪ 未練習
 
 ### 3.6 管理後台 (`admin_app.py`)
 
@@ -369,9 +396,23 @@ artifacts/{APP_ID}/
 | 欄位 | 類型 | 說明 |
 |------|------|------|
 | template_text | string | 原始句型模板 |
-| completed_options | array[string] | 已完成選項 |
+| completed_options | array[string] | 已完成選項（每輪結束後重置為空） |
+| completion_count | int | 累計完成輪數 |
 | dataset_id | string | 所屬題庫 ID |
+| rounds | array[map] | 每輪詳細結果（見下方） |
 | last_updated | timestamp | 最後更新時間 |
+
+**rounds 陣列結構：**
+```json
+{
+  "round": 1,
+  "timestamp": "2026-03-14T10:30:00Z",
+  "results": {
+    "test": { "tries": 1, "transcript": "This test is very important.", "feedback": "..." },
+    "rule": { "tries": 2, "transcript": "...", "feedback": "..." }
+  }
+}
+```
 
 #### Shared Vocab Catalog (`shared_vocab/{set_id}`)
 
@@ -459,7 +500,7 @@ artifacts/{APP_ID}/
 | 儀表板 | 1329–1650 | 4 Tab：戰績表、排行榜、單字統計、句型統計 |
 | 單字管理 | 1654–1940 | 5 Tab：✨ AI 輸入、修改、刪除、📂 CSV 匯入/匯出、📥 公用單字集 |
 | 單字練習 | 1945–2150 | 3 Tab：快閃、測驗（SRS）、連連看 + 練習時長追蹤 |
-| 句型口說 | 2153–2300 | 題庫選擇（Premium 門控）、錄音辨識、進度 + 練習時長追蹤 |
+| 句型口說 | 2153–2300 | 題庫選擇（Premium 門控）、JS drill 元件嵌入（drill_component.py）、練習時長追蹤 |
 | 頁尾 | 2302–2304 | 分隔線 + 版權 |
 
 ### admin_app.py (753 行)

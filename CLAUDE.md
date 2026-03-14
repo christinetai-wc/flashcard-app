@@ -49,6 +49,17 @@ artifacts/{APP_ID}/users/{student_id}/sentence_progress/{md5}  # 句型進度
 - **密碼**：SHA-256 雜湊存 Firestore
 - **繁體中文**：所有 UI 文字、POS 詞性、釋義均使用繁體中文
 
+## 句型口說元件（drill_component.py）
+- **架構**：自包含 JS 元件，透過 `st.components.v1.html()` 嵌入 iframe
+- **流程**：按開始 → TTS 示範 → 錄音 + VAD → 預篩 → AI 判讀 → 回饋 → 下一個選項
+- **預篩**：SpeechRecognition 沒辨識到文字 → 不送 Gemini（省 token，防小孩亂按）
+- **AI 降級**：429/404 時降級：gemini-2.5-flash → gemini-2.0-flash → 瀏覽器語音辨識（同一段錄音不重唸）
+- **Firestore 寫入**：JS 直接用 REST API 寫入（Python 產生短期 access token 傳給 JS）
+- **逐題存入**：每個 option 通過後即時寫入 `completed_options`，中途離開不丟進度；續練時跳過已完成
+- **Token 記錄**：Gemini `usageMetadata.totalTokenCount` 寫入 `ai_usage.speech.{date}`（與 Python 同結構）
+- **深色模式**：偵測父頁面 `document.body` 背景色亮度，動態切換 CSS class
+- **進度格式**：`completion_count`（輪數）+ `rounds` 陣列（每輪詳細結果）
+
 ## Gotchas
 - 新用戶 `sync_vocab_from_db(init_if_empty=False)` — 不自動建立預設單字
 - `pending_items`（文字 AI）和 `pending_ocr_items`（圖片 OCR）分開存，避免互相覆蓋
@@ -56,6 +67,7 @@ artifacts/{APP_ID}/users/{student_id}/sentence_progress/{md5}  # 句型進度
 - 句型進度 Document ID = Template 的 MD5 hash
 - 舊資料向後相容：`.get("plan")` 預設 `"free"`、`.get("is_premium", False)` 預設免費
 - 公用單字集資料存為單一文件（words 陣列 ~200KB），不是每個單字一個文件
+- 句型口說完成一輪後 `completed_options` 重置為空，儀表板以 `completion_count` 為準
 
 ## 詳細規格
 完整資料模型、設計決策、邊界處理、安全分析等詳見 `SPEC.md`
