@@ -106,6 +106,10 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
 .vol-bar-container {{ display:flex; justify-content:center; align-items:center; gap:2px; height:30px; margin:8px 0; }}
 .vol-bar {{ width:4px; background:#555; border-radius:2px; transition:height 0.05s; }}
 .vol-bar.active {{ background:#4CAF50; }}
+.done-btn {{ margin:8px auto; padding:6px 20px; border:1px solid #999; border-radius:18px; background:transparent; color:#666; font-size:0.85rem; cursor:pointer; }}
+.done-btn:hover {{ background:rgba(0,0,0,0.05); }}
+body.dark .done-btn {{ color:#aaa; border-color:#666; }}
+body.dark .done-btn:hover {{ background:rgba(255,255,255,0.1); }}
 
 .drill-feedback {{ margin:10px 0; padding:12px; border-radius:10px; font-size:0.9rem; line-height:1.5; display:none; }}
 .feedback-correct {{ background:rgba(33,195,84,0.1); border:1px solid rgba(33,195,84,0.3); }}
@@ -159,6 +163,7 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
         <div class="drill-sentence" id="drill-sentence"></div>
         <div class="drill-status" id="drill-status">按下開始，AI 會帶你逐句練習</div>
         <div class="vol-bar-container" id="vol-bars" style="display:none;"></div>
+        <button class="done-btn" id="done-btn" style="display:none;">✋ 我說完了</button>
     </div>
     <div class="drill-history" id="drill-history"></div>
     <div style="text-align:center; margin:12px 0;">
@@ -295,6 +300,7 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
     function recordUntilSilence() {{
         return new Promise((resolve) => {{
             const threshold = S.vadThreshold;
+            const doneBtn = $('done-btn');
 
             const chunks = [];
             let mimeType = 'audio/webm';
@@ -304,8 +310,16 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
             }}
             const rec = new MediaRecorder(S.stream, mimeType ? {{ mimeType }} : {{}});
             rec.ondataavailable = e => {{ if (e.data.size > 0) chunks.push(e.data); }};
-            rec.onstop = () => resolve(new Blob(chunks, {{ type: mimeType || 'audio/webm' }}));
+            rec.onstop = () => {{
+                doneBtn.style.display = 'none';
+                doneBtn.onclick = null;
+                resolve(new Blob(chunks, {{ type: mimeType || 'audio/webm' }}));
+            }};
             rec.start(100);
+
+            // 手動停止按鈕
+            doneBtn.style.display = 'inline-block';
+            doneBtn.onclick = () => {{ if (rec.state === 'recording') rec.stop(); }};
 
             const MAX_RECORD_MS = 10000;  // 最長錄音 10 秒
             let silenceStart = null, speechDetected = false, elapsed = 0;
