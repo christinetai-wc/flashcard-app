@@ -161,6 +161,19 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
 
 <script>
 (function() {{
+    // === iOS iframe 權限修復 ===
+    // Streamlit html() 的 iframe 沒有 allow="microphone" 屬性，手動補上
+    try {{
+        const frames = window.parent.document.querySelectorAll('iframe');
+        frames.forEach(f => {{
+            if (f.contentWindow === window) {{
+                if (!f.getAttribute('allow') || !f.getAttribute('allow').includes('microphone')) {{
+                    f.setAttribute('allow', 'microphone; autoplay');
+                }}
+            }}
+        }});
+    }} catch(e) {{ console.warn('Cannot set iframe allow attribute:', e); }}
+
     // === 偵測深色模式 ===
     try {{
         const bg = getComputedStyle(window.parent.document.body).backgroundColor;
@@ -316,17 +329,32 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
         }});
     }}
 
-    // === TTS ===
+    // === TTS（iOS 相容） ===
+    const _syn = window.parent.speechSynthesis || window.speechSynthesis;
+    let _ttsUnlocked = false;
+
+    // iOS Safari 要求 speechSynthesis 在使用者手勢中同步呼叫一次才能解鎖
+    function unlockTTS() {{
+        if (_ttsUnlocked || !_syn) return;
+        const u = new SpeechSynthesisUtterance('');
+        u.volume = 0;
+        _syn.speak(u);
+        _ttsUnlocked = true;
+    }}
+
     function playTTS(text) {{
         return new Promise(resolve => {{
-            const syn = window.parent.speechSynthesis || window.speechSynthesis;
-            if (!syn) {{ resolve(); return; }}
-            syn.cancel();
+            if (!_syn) {{ resolve(); return; }}
+            _syn.cancel();
             const u = new SpeechSynthesisUtterance(text);
             u.lang = 'en-US'; u.rate = CFG.ttsRate;
             u.onend = () => setTimeout(resolve, 300);
             u.onerror = () => resolve();
-            syn.speak(u);
+            // iOS 有時 onend 不觸發，加超時保底
+            const timeout = setTimeout(() => resolve(), 8000);
+            const origEnd = u.onend;
+            u.onend = () => {{ clearTimeout(timeout); origEnd(); }};
+            _syn.speak(u);
         }});
     }}
 
@@ -691,6 +719,7 @@ Return JSON:
         $('start-btn').disabled = true;
         $('start-btn').style.display = 'none';
         S.phase = 'running';
+        unlockTTS();  // iOS: 在使用者手勢中同步解鎖 TTS
         S.results = {{}};  S.tries = {{}};  S.history = [];
         $('drill-history').innerHTML = '';
 
@@ -721,7 +750,7 @@ Return JSON:
             S.vadThreshold = Math.max(CFG.silenceThreshold, noiseFloor * 1.5);
             console.log('[VAD] noise floor:', noiseFloor.toFixed(1), 'threshold:', S.vadThreshold.toFixed(1));
         }} catch (e) {{
-            setStatus('❌ 無法存取麥克風，請允許麥克風權限後重試');
+            setStatus('❌ 無法存取麥克風，請允許麥克風權限後重新整理頁面');
             $('start-btn').disabled = false;
             $('start-btn').style.display = 'inline-block';
             return;
