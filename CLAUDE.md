@@ -45,7 +45,7 @@ artifacts/{APP_ID}/users/{student_id}/sentence_progress/{md5}  # 句型進度
 - **Session State**：Streamlit 每次互動重跑，用 `st.session_state` 持久化；widget 用 `key=` 綁定
 - **SRS 欄位**：單字含 `srs_interval`, `srs_ease`, `srs_due`, `srs_streak`, `srs_last_review`
 - **Premium 判定**：`is_premium(user_info)` 比對 `plan` + `plan_expiry`，舊用戶無欄位預設 free
-- **免費方案限制**：`FREE_DAILY_VOCAB_AI_LIMIT=3`（AI 輸入 + OCR 共用），`VOCAB_AI_MAX_LINES=100`
+- **免費方案限制**：`FREE_DAILY_VOCAB_AI_LIMIT=3`（AI 輸入 + OCR 共用），`VOCAB_AI_MAX_LINES=100`，`FREE_DAILY_DRILL_LIMIT=30`（句型口說 AI 判讀，用完切語音辨識）
 - **密碼**：SHA-256 雜湊存 Firestore
 - **繁體中文**：所有 UI 文字、POS 詞性、釋義均使用繁體中文
 
@@ -53,6 +53,8 @@ artifacts/{APP_ID}/users/{student_id}/sentence_progress/{md5}  # 句型進度
 - **架構**：自包含 JS 元件，透過 `st.components.v1.html()` 嵌入 iframe
 - **流程**：按開始 → TTS 示範 → 錄音 + VAD → 預篩 → AI 判讀 → 回饋 → 下一個選項
 - **預篩**：SpeechRecognition 沒辨識到文字 → 不送 Gemini（省 token，防小孩亂按）
+- **免費額度**：每日 30 次 AI 判讀，用完自動切語音辨識模式（仍可練習）
+- **動態 VAD**：錄音前偵測 0.5 秒底噪，門檻 = max(12, 底噪×1.5)；最長錄音 10 秒
 - **AI 降級**：429/404 時降級：gemini-2.5-flash → gemini-2.0-flash → 瀏覽器語音辨識（同一段錄音不重唸）
 - **Firestore 寫入**：JS 直接用 REST API 寫入（Python 產生短期 access token 傳給 JS）
 - **逐題存入**：每個 option 通過後即時寫入 `completed_options`，中途離開不丟進度；續練時跳過已完成

@@ -206,10 +206,17 @@ client_email = "..."
 #### 3.4.2 練習流程（JS 自包含元件 `drill_component.py`）
 - 全程由 JS 控制，不依賴 Streamlit 的 request-response 循環
 - 嵌入方式：`st.components.v1.html()` iframe
-- **流程：** 按「開始練習」→ 逐個選項：TTS 示範 → 錄音 + VAD 偵測說完 → AI 判讀 → 回饋 → 下一個
+- **流程：** 按「開始練習」→ 逐個選項：TTS 示範 → 錄音 + VAD 偵測說完 → 預篩 → AI 判讀 → 回饋 → 下一個
+- **動態 VAD：** 錄音前偵測 0.5 秒環境底噪，門檻 = `max(12, 底噪×1.5)`；最長錄音 10 秒保底
 - **深色模式：** 偵測父頁面 `document.body` 背景色亮度，動態加 `body.dark` / `body.light` class
 
-#### 3.4.3 AI 判讀（預篩 + 多模型降級 + 語音辨識 fallback）
+#### 3.4.3 AI 判讀（額度控管 + 預篩 + 多模型降級 + 語音辨識 fallback）
+
+**免費用戶每日額度：**
+- `FREE_DAILY_DRILL_LIMIT = 30` 次 AI 判讀/天
+- 用完後自動切換語音辨識模式（仍可練習，不花 token）
+- `ai_usage.drill_count.{date}` 記錄每日判讀次數
+- Premium 用戶不限次數
 
 **預篩（零 token 成本）：**
 - 錄音時同步啟動瀏覽器 `SpeechRecognition`

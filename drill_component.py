@@ -21,12 +21,14 @@ def _get_firestore_token():
 
 def generate_drill_html(template, options, completion_count, api_key, api_url,
                         template_hash, dataset_id, firestore_doc_path,
-                        completed_options=None, user_doc_path=None):
+                        completed_options=None, user_doc_path=None,
+                        drill_remaining=-1):
     """產生句型口說練習的完整 HTML/JS/CSS 元件
 
     firestore_doc_path: e.g. "artifacts/flashcard-pro-v1/users/xxx/sentence_progress/abc123"
     completed_options: 已完成的選項列表，用於續練（中途離開後回來跳過已完成的）
     user_doc_path: e.g. "artifacts/flashcard-pro-v1/public/data/users/xxx" 用於記錄 AI token 使用量
+    drill_remaining: 免費用戶今日剩餘 AI 判讀次數，-1 表示無限（Premium）
     """
     token, project_id = _get_firestore_token()
 
@@ -46,6 +48,7 @@ def generate_drill_html(template, options, completion_count, api_key, api_url,
         "firestoreProject": project_id,
         "firestoreDocPath": firestore_doc_path,
         "firestoreUserDocPath": user_doc_path or "",
+        "drillRemaining": drill_remaining,
     }, ensure_ascii=False)
 
     return f"""
@@ -165,6 +168,7 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
     let S = {{
         optIdx: 0, phase: 'idle', tries: {{}}, results: {{}},
         stream: null, analyser: null, audioCtx: null, history: [],
+        drillUsed: 0,  // 本次 session 已用的 AI 判讀次數
     }};
 
     // === UI ===
@@ -247,8 +251,27 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
         return data.reduce((a, b) => a + b, 0) / data.length;
     }}
 
-    function recordUntilSilence() {{
+    // 偵測環境底噪（取 0.5 秒平均值）
+    function measureNoiseFloor() {{
         return new Promise(resolve => {{
+            const samples = [];
+            const measure = () => {{
+                samples.push(getVolume());
+                if (samples.length < 10) {{ setTimeout(measure, 50); return; }}  // 10 次 × 50ms = 0.5 秒
+                const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+                resolve(avg);
+            }};
+            measure();
+        }});
+    }}
+
+    function recordUntilSilence() {{
+        return new Promise(async (resolve) => {{
+            // 動態門檻：底噪 × 1.5，至少 CFG.silenceThreshold
+            const noiseFloor = await measureNoiseFloor();
+            const threshold = Math.max(CFG.silenceThreshold, noiseFloor * 1.5);
+            console.log('[VAD] noise floor:', noiseFloor.toFixed(1), 'threshold:', threshold.toFixed(1));
+
             const chunks = [];
             let mimeType = 'audio/webm';
             if (!MediaRecorder.isTypeSupported(mimeType)) {{
@@ -260,18 +283,21 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
             rec.onstop = () => resolve(new Blob(chunks, {{ type: mimeType || 'audio/webm' }}));
             rec.start(100);
 
+            const MAX_RECORD_MS = 10000;  // 最長錄音 10 秒
             let silenceStart = null, speechDetected = false, elapsed = 0;
             const check = () => {{
                 if (rec.state !== 'recording') return;
                 elapsed += 50;
                 const vol = getVolume();
                 updateVolBars(vol);
-                if (vol > CFG.silenceThreshold) {{ speechDetected = true; silenceStart = null; }}
+                if (vol > threshold) {{ speechDetected = true; silenceStart = null; }}
                 else if (speechDetected) {{
                     if (!silenceStart) silenceStart = Date.now();
                     else if (Date.now() - silenceStart > CFG.silenceDuration) {{ rec.stop(); return; }}
                 }}
+                // 超時保底：未說話 15 秒 或 錄音達 10 秒
                 if (!speechDetected && elapsed > 15000) {{ rec.stop(); return; }}
+                if (elapsed > MAX_RECORD_MS) {{ rec.stop(); return; }}
                 setTimeout(check, 50);
             }};
             setTimeout(check, 500);
@@ -357,6 +383,14 @@ Return JSON:
     // 用同一段錄音依序嘗試：2.5 → 2.0 → 1.5 → 語音辨識
     async function evaluate(audioBlob, targetWord, srTranscripts) {{
         const sentence = CFG.template.replace('___', targetWord);
+
+        // 免費用戶每日額度檢查（drillRemaining == -1 表示 Premium 無限）
+        const remaining = CFG.drillRemaining < 0 ? Infinity : CFG.drillRemaining - S.drillUsed;
+        if (remaining <= 0) {{
+            setStatus('🎙️ 今日 AI 額度已用完，語音比對中...');
+            return textMatch(srTranscripts, targetWord, sentence);
+        }}
+
         const base64 = await blobToBase64(audioBlob);
         const mimeType = audioBlob.type || 'audio/webm';
         const prompt = buildPrompt(sentence, targetWord);
@@ -373,10 +407,11 @@ Return JSON:
                     continue;
                 }}
                 if (result) {{
-                    // 記錄 token 使用量
+                    // 記錄 token 使用量 + 判讀次數（合併一次寫入）
                     const tc = result._tokenCount || 0;
                     delete result._tokenCount;
-                    if (tc > 0) recordTokenUsage(tc);
+                    S.drillUsed++;
+                    recordUsageToFirestore(tc);
                     return result;
                 }}
             }} catch(e) {{
@@ -480,32 +515,37 @@ Return JSON:
         }} catch(e) {{ console.error('Firestore write error:', e); }}
     }}
 
-    // 記錄 AI token 使用量到 user doc（與 Python record_ai_usage 同結構）
-    async function recordTokenUsage(tokenCount) {{
-        if (!CFG.firestoreUserDocPath || tokenCount <= 0) return;
-        const today = new Date().toISOString().slice(0, 10);  // YYYY-MM-DD
+    // 記錄 AI token 使用量 + 判讀次數（合併一次讀寫，避免互相覆蓋）
+    async function recordUsageToFirestore(tokenCount) {{
+        if (!CFG.firestoreUserDocPath) return;
+        const today = new Date().toISOString().slice(0, 10);
         const userUrl = `https://firestore.googleapis.com/v1/projects/${{CFG.firestoreProject}}/databases/(default)/documents/${{CFG.firestoreUserDocPath}}`;
         try {{
-            // Firestore REST API 不支援 Increment，先讀再寫
+            // 讀取現有 ai_usage
             const res = await fetch(userUrl, {{
                 headers: {{ 'Authorization': 'Bearer ' + CFG.firestoreToken }}
             }});
-            let currentVal = 0;
+            let speechVal = 0, drillVal = 0;
             if (res.ok) {{
                 const doc = await res.json();
-                const speechMap = doc.fields?.ai_usage?.mapValue?.fields?.speech?.mapValue?.fields;
-                if (speechMap?.[today]) {{
-                    currentVal = parseInt(speechMap[today].integerValue || '0');
-                }}
+                const usageFields = doc.fields?.ai_usage?.mapValue?.fields;
+                const speechMap = usageFields?.speech?.mapValue?.fields;
+                const drillMap = usageFields?.drill_count?.mapValue?.fields;
+                if (speechMap?.[today]) speechVal = parseInt(speechMap[today].integerValue || '0');
+                if (drillMap?.[today]) drillVal = parseInt(drillMap[today].integerValue || '0');
             }}
-            const newVal = currentVal + tokenCount;
-            // 用 updateMask 只更新 ai_usage 欄位
+            // 組裝更新：speech token + drill_count
+            const usageFields = {{}};
+            if (tokenCount > 0) {{
+                usageFields.speech = {{ mapValue: {{ fields: {{
+                    [today]: {{ integerValue: String(speechVal + tokenCount) }}
+                }} }} }};
+            }}
+            usageFields.drill_count = {{ mapValue: {{ fields: {{
+                [today]: {{ integerValue: String(drillVal + 1) }}
+            }} }} }};
             const fields = {{
-                ai_usage: {{ mapValue: {{ fields: {{
-                    speech: {{ mapValue: {{ fields: {{
-                        [today]: {{ integerValue: String(newVal) }}
-                    }} }} }}
-                }} }} }}
+                ai_usage: {{ mapValue: {{ fields: usageFields }} }}
             }};
             await fetch(userUrl + '?updateMask.fieldPaths=ai_usage', {{
                 method: 'PATCH',
@@ -515,7 +555,7 @@ Return JSON:
                 }},
                 body: JSON.stringify({{ fields }})
             }});
-        }} catch(e) {{ console.warn('Token usage record error:', e); }}
+        }} catch(e) {{ console.warn('Usage record error:', e); }}
     }}
 
     // 每完成一個 option 就即時寫入，中途離開不丟進度

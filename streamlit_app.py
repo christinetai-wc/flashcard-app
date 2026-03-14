@@ -68,6 +68,7 @@ SHARED_VOCAB_DATA_PATH = f"artifacts/{APP_ID}/public/data/shared_vocab_data"
 # --- 免費方案限制 ---
 FREE_DAILY_VOCAB_AI_LIMIT = 3   # 單字補全每日上限
 VOCAB_AI_MAX_LINES = 100        # 單字補全每次最多行數
+FREE_DAILY_DRILL_LIMIT = 30     # 句型口說 AI 判讀每日上限（免費用戶）
 
 # --- LINE Bot (Messaging API) ---
 LINE_CHANNEL_ACCESS_TOKEN = st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -141,6 +142,24 @@ def consume_vocab_ai_usage():
     if is_premium(st.session_state.get("user_info")):
         return
     st.session_state.vocab_ai_count = st.session_state.get("vocab_ai_count", 0) + 1
+
+def get_drill_remaining():
+    """取得免費用戶今日句型口說 AI 判讀剩餘次數。Premium 回傳 -1（無限）"""
+    if is_premium(st.session_state.get("user_info")):
+        return -1
+    today_str = str(date.today())
+    try:
+        user_name = st.session_state.get("current_user_name")
+        if not user_name or not db:
+            return FREE_DAILY_DRILL_LIMIT
+        doc = db.collection(USER_LIST_PATH).document(user_name).get()
+        if doc.exists:
+            usage = doc.to_dict().get("ai_usage", {})
+            used = usage.get("drill_count", {}).get(today_str, 0)
+            return max(0, FREE_DAILY_DRILL_LIMIT - int(used))
+    except Exception:
+        pass
+    return FREE_DAILY_DRILL_LIMIT
 
 # --- 語音辨識次數紀錄（不限制，但寫入 Firestore 供統計）---
 
@@ -2288,6 +2307,7 @@ else:
             user_name = st.session_state.current_user_name
             fs_doc_path = f"artifacts/{APP_ID}/users/{user_id}/sentence_progress/{template_hash}"
             user_doc_path = f"{USER_LIST_PATH}/{user_name}"
+            drill_remaining = get_drill_remaining()
             drill_html = generate_drill_html(
                 template=template,
                 options=options,
@@ -2299,6 +2319,7 @@ else:
                 firestore_doc_path=fs_doc_path,
                 completed_options=st.session_state.completed_options,
                 user_doc_path=user_doc_path,
+                drill_remaining=drill_remaining,
             )
             html(drill_html, height=650, scrolling=True)
 

@@ -47,6 +47,15 @@
 - JS 從 Gemini 回應 `usageMetadata.totalTokenCount` 取得 token 數
 - 寫入 Firestore `ai_usage.speech.{date}`，與 Python 端 `record_ai_usage` 同結構
 
+### 免費用戶每日 AI 判讀限制
+- `FREE_DAILY_DRILL_LIMIT=30`，用完自動切語音辨識模式（仍可練習不花 token）
+- `ai_usage.drill_count.{date}` 記錄每日判讀次數
+- token 與 drill_count 合併一次讀寫 Firestore，避免 updateMask 互相覆蓋
+
+### 動態 VAD 門檻 + 最長錄音
+- 錄音前偵測 0.5 秒環境底噪，門檻 = max(12, 底噪×1.5)，解決噪音環境斷不了句
+- 最長錄音 10 秒保底
+
 ## 2026-03-08
 
 ### CSV 匯入/匯出 + 重複檢查
