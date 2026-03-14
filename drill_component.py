@@ -160,7 +160,6 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
         <div class="drill-status" id="drill-status">按下開始，AI 會帶你逐句練習</div>
         <div class="vol-bar-container" id="vol-bars" style="display:none;"></div>
     </div>
-    <div class="drill-feedback" id="drill-feedback"></div>
     <div class="drill-history" id="drill-history"></div>
     <div style="text-align:center; margin:12px 0;">
         <button class="drill-start-btn" id="start-btn">🎯 開始練習</button>
@@ -232,17 +231,8 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
     }}
 
     function showFeedback(word, result) {{
-        const el = $('drill-feedback');
-        el.style.display = 'block';
-        el.className = 'drill-feedback ' + (result.is_correct ? 'feedback-correct' : 'feedback-wrong');
-        el.innerHTML = `
-            <div class="feedback-transcript">${{result.is_correct ? '✅' : '❌'}} 聽到：${{result.transcript || '(無法辨識)'}}</div>
-            <div class="feedback-text">💡 ${{result.feedback || ''}}</div>
-        `;
         S.history.push({{ word, ...result }});
     }}
-
-    function hideFeedback() {{ $('drill-feedback').style.display = 'none'; }}
 
     function renderHistory() {{
         $('drill-history').innerHTML = S.history.map(h => {{
@@ -609,7 +599,7 @@ Return JSON:
         }} catch(e) {{ console.warn('Usage record error:', e); }}
     }}
 
-    // 更新排行榜統計（sentence_stats.{datasetId}）
+    // 更新排行榜統計（sentence_stats）
     async function updateSentenceStats() {{
         if (!CFG.firestoreUserDocPath || !CFG.datasetId || !CFG.totalSentences) return;
         const userUrl = `https://firestore.googleapis.com/v1/projects/${{CFG.firestoreProject}}/databases/(default)/documents/${{CFG.firestoreUserDocPath}}`;
@@ -716,7 +706,6 @@ Return JSON:
         while (!S.results[word]) {{
             S.tries[word]++;
             renderOptions();
-            hideFeedback();
 
             setStatus('🔊 聽示範...');
             showSentence(word);
@@ -824,7 +813,6 @@ Return JSON:
     async function completeDrill() {{
         $('vol-bars').style.display = 'none';
         showSentence(null);
-        hideFeedback();
 
         setStatus('📝 儲存成績中...');
         let newCount;
