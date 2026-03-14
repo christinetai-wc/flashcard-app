@@ -11,6 +11,15 @@ from google.oauth2 import service_account
 # --- 設定區 ---
 st.set_page_config(page_title="Flashcard 後台管理", page_icon="⚙️", layout="wide")
 
+# --- 手機適配 CSS ---
+st.markdown("""<style>
+@media (max-width: 640px) {
+    .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
+    .stButton > button { min-height: 44px; }
+    .stDataFrame, .stTable { overflow-x: auto !important; }
+}
+</style>""", unsafe_allow_html=True)
+
 # 環境選項 — 從 secrets.toml 讀取預設值，與 streamlit_app.py 一致
 _DEFAULT_APP_ID = st.secrets.get("APP_ID", "flashcard-pro-v1")
 ENV_OPTIONS = {
@@ -72,6 +81,78 @@ SENTENCE_CATALOG_PATH = f"artifacts/{APP_ID}/public/data/sentences"
 SENTENCE_DATA_BASE_PATH = f"artifacts/{APP_ID}/public/data"
 SHARED_VOCAB_CATALOG_PATH = f"artifacts/{APP_ID}/public/data/shared_vocab"
 SHARED_VOCAB_DATA_PATH = f"artifacts/{APP_ID}/public/data/shared_vocab_data"
+
+# --- 確認對話框（危險操作） ---
+
+@st.dialog("⚠️ 確認刪除使用者")
+def confirm_delete_user():
+    name = st.session_state.get("_confirm_delete_user")
+    st.warning(f"即將刪除使用者「{name}」，刪除後將無法登入，此操作無法復原。")
+    c1, c2 = st.columns(2)
+    if c1.button("取消", use_container_width=True):
+        st.session_state.pop("_confirm_delete_user", None)
+        st.rerun()
+    if c2.button("確認刪除", type="primary", use_container_width=True):
+        db.collection(USER_LIST_PATH).document(name).delete()
+        st.session_state.pop("_confirm_delete_user", None)
+        st.rerun()
+
+@st.dialog("⚠️ 確認取消 Premium")
+def confirm_revoke_premium():
+    name = st.session_state.get("_confirm_revoke_name")
+    note = st.session_state.get("_confirm_revoke_note", "")
+    st.warning(f"即將取消「{name}」的 Premium，將立即降級為免費方案。")
+    c1, c2 = st.columns(2)
+    if c1.button("取消", use_container_width=True):
+        st.session_state.pop("_confirm_revoke_name", None)
+        st.rerun()
+    if c2.button("確認取消", type="primary", use_container_width=True):
+        db.collection(USER_LIST_PATH).document(name).update({
+            "plan": "free", "plan_expiry": None,
+            "plan_note": f"[已取消] {note}"
+        })
+        st.session_state.pop("_confirm_revoke_name", None)
+        st.rerun()
+
+@st.dialog("⚠️ 確認刪除句型")
+def confirm_delete_sentences():
+    count = st.session_state.get("_confirm_del_sentence_count", 0)
+    st.warning(f"即將刪除 {count} 筆句型資料，此操作無法復原。")
+    c1, c2 = st.columns(2)
+    if c1.button("取消", use_container_width=True):
+        st.session_state.pop("_confirm_del_sentences", None)
+        st.rerun()
+    if c2.button("確認刪除", type="primary", use_container_width=True):
+        items = st.session_state.get("_confirm_del_sentences", [])
+        path = st.session_state.get("_confirm_del_sentence_path", "")
+        batch = db.batch()
+        bc = 0
+        for doc_id in items:
+            batch.delete(db.collection(path).document(doc_id))
+            bc += 1
+            if bc >= 400:
+                batch.commit(); batch = db.batch(); bc = 0
+        if bc > 0: batch.commit()
+        st.session_state.pop("_confirm_del_sentences", None)
+        get_sentences_content.clear()
+        if "editor_df" in st.session_state:
+            del st.session_state.editor_df
+        st.rerun()
+
+@st.dialog("⚠️ 確認刪除公用單字集")
+def confirm_delete_shared_vocab():
+    doc_id = st.session_state.get("_confirm_del_sv_id")
+    name = st.session_state.get("_confirm_del_sv_name", doc_id)
+    st.warning(f"即將刪除公用單字集「{name}」，此操作無法復原。")
+    c1, c2 = st.columns(2)
+    if c1.button("取消", use_container_width=True):
+        st.session_state.pop("_confirm_del_sv_id", None)
+        st.rerun()
+    if c2.button("確認刪除", type="primary", use_container_width=True):
+        db.collection(SHARED_VOCAB_CATALOG_PATH).document(doc_id).delete()
+        db.collection(SHARED_VOCAB_DATA_PATH).document(doc_id).delete()
+        st.session_state.pop("_confirm_del_sv_id", None)
+        st.rerun()
 
 # --- 工具函式 ---
 def hash_password(password):
@@ -197,10 +278,8 @@ if menu == "👥 學生帳號管理":
                     st.subheader("危險區域")
                     st.write("刪除後該使用者將無法登入。")
                     if st.button(f"🗑️ 刪除使用者 {selected_user_name}", type="primary"):
-                        db.collection(USER_LIST_PATH).document(selected_user_name).delete()
-                        st.success(f"已刪除 {selected_user_name}")
-                        time.sleep(1)
-                        st.rerun()
+                        st.session_state._confirm_delete_user = selected_user_name
+                        confirm_delete_user()
     
     st.divider()
     st.caption("目前所有使用者一覽：")
@@ -320,14 +399,9 @@ elif menu == "💎 訂閱管理":
                 st.markdown("**取消 Premium**")
                 st.caption("將立即降級為免費方案。")
                 if st.button(f"🔄 取消 {selected_name} 的 Premium"):
-                    db.collection(USER_LIST_PATH).document(selected_name).update({
-                        "plan": "free",
-                        "plan_expiry": None,
-                        "plan_note": f"[已取消] {current_note}"
-                    })
-                    st.success(f"已將 {selected_name} 降級為免費方案。")
-                    time.sleep(1)
-                    st.rerun()
+                    st.session_state._confirm_revoke_name = selected_name
+                    st.session_state._confirm_revoke_note = current_note
+                    confirm_revoke_premium()
 
 # ==========================================
 # 功能 3: AI 用量統計
@@ -597,31 +671,16 @@ elif menu == "📝 編輯現有句型書":
             
             # 刪除功能
             if col_del.button("🗑️ 刪除選取項目", type="primary"):
-                # 處理原本有 Select 欄位的 (既有資料)
                 if "Select" in edited_df.columns:
-                    # 填補 NaN (針對新加入的行預設可能是 NaN)
                     edited_df["Select"] = edited_df["Select"].fillna(False)
                     to_delete_df = edited_df[edited_df["Select"] == True]
-                    delete_count = len(to_delete_df)
-                    
-                    if delete_count > 0:
-                        batch = db.batch()
-                        count = 0
-                        for _, row in to_delete_df.iterrows():
-                            doc_id = row.get("doc_id")
-                            if doc_id and pd.notna(doc_id):
-                                ref = db.collection(target_path).document(doc_id)
-                                batch.delete(ref)
-                                count += 1
-                                if count >= 400:
-                                    batch.commit(); batch = db.batch(); count = 0
-                        if count > 0: batch.commit()
-                        
-                        st.success(f"已刪除 {delete_count} 筆資料。")
-                        get_sentences_content.clear()
-                        del st.session_state.editor_df
-                        time.sleep(1)
-                        st.rerun()
+                    delete_ids = [row.get("doc_id") for _, row in to_delete_df.iterrows()
+                                  if row.get("doc_id") and pd.notna(row.get("doc_id"))]
+                    if delete_ids:
+                        st.session_state._confirm_del_sentences = delete_ids
+                        st.session_state._confirm_del_sentence_count = len(delete_ids)
+                        st.session_state._confirm_del_sentence_path = target_path
+                        confirm_delete_sentences()
                     else:
                         st.warning("請先勾選要刪除的項目。")
 
@@ -746,8 +805,6 @@ elif menu == "📚 管理公用單字集":
                 col1, col2 = st.columns([4, 1])
                 col1.write(f"**{cat.get('name', cat['doc_id'])}** — {cat.get('word_count', '?')} 字")
                 if col2.button("🗑️ 刪除", key=f"del_sv_{cat['doc_id']}"):
-                    db.collection(SHARED_VOCAB_CATALOG_PATH).document(cat["doc_id"]).delete()
-                    db.collection(SHARED_VOCAB_DATA_PATH).document(cat["doc_id"]).delete()
-                    st.success(f"已刪除 {cat.get('name', cat['doc_id'])}")
-                    time.sleep(1)
-                    st.rerun()
+                    st.session_state._confirm_del_sv_id = cat["doc_id"]
+                    st.session_state._confirm_del_sv_name = cat.get("name", cat["doc_id"])
+                    confirm_delete_shared_vocab()

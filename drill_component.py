@@ -54,7 +54,10 @@ def generate_drill_html(template, options, completion_count, api_key, api_url,
     return f"""
 <!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
 <body>
 <style>
 * {{ margin:0; padding:0; box-sizing:border-box; }}
@@ -124,6 +127,17 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
 .drill-complete .stars {{ font-size:2rem; margin:8px 0; }}
 .drill-summary {{ text-align:left; margin:12px auto; max-width:400px; }}
 .summary-row {{ display:flex; justify-content:space-between; padding:6px 0; font-size:0.9rem; }}
+
+/* 手機適配 */
+@media (max-width: 480px) {{
+    .drill-template {{ font-size: 1.1rem; }}
+    .drill-sentence {{ font-size: 1rem; }}
+    .opt {{ padding: 6px 10px; font-size: 0.85rem; }}
+    .drill-start-btn {{ padding: 12px 24px; font-size: 1rem; }}
+    .drill-history {{ max-height: 150px; }}
+    .drill-feedback {{ font-size: 0.85rem; padding: 10px; }}
+    .history-item {{ font-size: 0.8rem; padding: 6px 10px; }}
+}}
 </style>
 
 <div id="drill-app">

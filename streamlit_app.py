@@ -26,6 +26,18 @@ except ImportError:
 # --- 0. 設定與常數 ---
 st.set_page_config(page_title="Flashcard Pro 雲端版", page_icon="✨", layout="wide")
 
+# --- 手機適配 CSS ---
+st.markdown("""<style>
+@media (max-width: 640px) {
+    /* Streamlit 主區域減少左右 padding */
+    .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
+    /* 按鈕最小觸擊面積 44px */
+    .stButton > button { min-height: 44px; }
+    /* 資料表格允許橫向捲動 */
+    .stDataFrame, .stTable { overflow-x: auto !important; }
+}
+</style>""", unsafe_allow_html=True)
+
 # 讀取 Secrets
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash"
@@ -73,6 +85,35 @@ FREE_DAILY_DRILL_LIMIT = 30     # 句型口說 AI 判讀每日上限（免費用
 # --- LINE Bot (Messaging API) ---
 LINE_CHANNEL_ACCESS_TOKEN = st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_TEACHER_USER_ID = st.secrets.get("LINE_TEACHER_USER_ID", "")
+
+# --- 確認對話框（危險操作） ---
+
+@st.dialog("⚠️ 確認清除")
+def confirm_clear_sentence_progress():
+    target_id = st.session_state.get("_confirm_clear_target")
+    st.warning("此操作無法復原！將清除所有句型練習紀錄。")
+    c1, c2 = st.columns(2)
+    if c1.button("取消", use_container_width=True):
+        st.session_state.pop("_confirm_clear_target", None)
+        st.rerun()
+    if c2.button("確認清除", type="primary", use_container_width=True):
+        clear_user_sentence_history(target_id)
+        st.session_state.pop("_confirm_clear_target", None)
+        st.rerun()
+
+@st.dialog("⚠️ 確認刪除單字")
+def confirm_delete_vocab():
+    ids = st.session_state.get("_confirm_delete_ids", [])
+    st.warning(f"即將刪除 {len(ids)} 個單字，此操作無法復原。")
+    c1, c2 = st.columns(2)
+    if c1.button("取消", use_container_width=True):
+        st.session_state.pop("_confirm_delete_ids", None)
+        st.rerun()
+    if c2.button("確認刪除", type="primary", use_container_width=True):
+        delete_words_from_db(ids)
+        sync_vocab_from_db()
+        st.session_state.pop("_confirm_delete_ids", None)
+        st.rerun()
 
 # --- 2. 工具函式 ---
 
@@ -1510,26 +1551,20 @@ else:
                 
                 filtered_vocab = filter_vocab_data(u_vocab, selection)
                 
-                col1, col2, col3, col4 = st.columns(4)
-
-                # Metric 1: 總單字數
                 total_vocab_count = len(filtered_vocab)
-                col1.metric("範圍內單字數", total_vocab_count)
-
-                # Metric 2: 練習覆蓋率 (有做過練習的單字數 / 總單字數)
                 practiced_count = len([v for v in filtered_vocab if v.get('Total', 0) > 0])
                 coverage_rate = (practiced_count / total_vocab_count * 100) if total_vocab_count > 0 else 0
-                col2.metric("練習覆蓋率", f"{coverage_rate:.1f}%", help="有練習過的單字比例")
-
-                # Metric 3: 答題正確率 (總答對 / 總答題) -> 品質指標
                 total_correct = sum(v.get('Correct', 0) for v in filtered_vocab)
                 total_attempts = sum(v.get('Total', 0) for v in filtered_vocab)
                 accuracy_rate = (total_correct / total_attempts * 100) if total_attempts > 0 else 0
-                col3.metric("答題正確率", f"{accuracy_rate:.1f}%", help="所有練習次數中的正確比例")
-
-                # Metric 4: 今日待複習
                 due_count_dash = len(get_due_words(filtered_vocab))
-                col4.metric("📅 今日待複習", due_count_dash, help="到期需要複習的單字數量")
+
+                mc1, mc2 = st.columns(2)
+                mc1.metric("單字數", total_vocab_count)
+                mc2.metric("覆蓋率", f"{coverage_rate:.1f}%")
+                mc3, mc4 = st.columns(2)
+                mc3.metric("正確率", f"{accuracy_rate:.1f}%")
+                mc4.metric("📅 待複習", due_count_dash)
 
                 st.divider()
                 df_vocab_display = pd.DataFrame(filtered_vocab)
@@ -1609,12 +1644,10 @@ else:
                     st.divider()
                     st.dataframe(pd.DataFrame(progress_table), use_container_width=True, hide_index=True)
                     
-                    # --- 新增：清除紀錄按鈕 ---
-                    if st.button("🗑️ 清除所有句型練習紀錄 (無法復原)", type="primary"):
-                        clear_user_sentence_history(target_id)
-                        st.success("已清除所有進度！")
-                        time.sleep(1)
-                        st.rerun()
+                    # --- 清除紀錄（需確認） ---
+                    if st.button("🗑️ 清除所有句型練習紀錄", type="primary"):
+                        st.session_state._confirm_clear_target = target_id
+                        confirm_clear_sentence_progress()
 
         # --- 🏆 全班排行榜 Tab ---
         with tab_rank:
@@ -1838,9 +1871,9 @@ else:
                     )
                     
                     to_delete = res[res["選取"] == True]["id"].tolist()
-                    if st.button(f"確認刪除 ({len(to_delete)} 個)", type="primary"):
-                        delete_words_from_db(to_delete)
-                        sync_vocab_from_db(); st.success("已刪除！"); st.rerun()
+                    if to_delete and st.button(f"刪除 ({len(to_delete)} 個)", type="primary"):
+                        st.session_state._confirm_delete_ids = to_delete
+                        confirm_delete_vocab()
                 else: st.warning("無資料。")
             else: st.info("無資料。")
 
@@ -2321,7 +2354,7 @@ else:
                 user_doc_path=user_doc_path,
                 drill_remaining=drill_remaining,
             )
-            html(drill_html, height=650, scrolling=True)
+            html(drill_html, height=550, scrolling=True)
 
             keyboard_bridge()
 
