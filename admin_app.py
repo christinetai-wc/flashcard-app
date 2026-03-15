@@ -814,19 +814,89 @@ elif menu == "📚 管理公用單字集":
 # ==========================================
 elif menu == "🪵 口說練習 Log":
     st.header("口說練習 Log")
-    st.caption("查看學生口說練習的錯誤紀錄與裝置資訊")
 
     # 取得所有學生
     user_docs = db.collection(USER_LIST_PATH).stream()
-    user_names = sorted([d.id for d in user_docs])
+    all_users = {}
+    for d in user_docs:
+        all_users[d.id] = d.to_dict()
+    user_names = sorted(all_users.keys())
 
     if not user_names:
         st.info("目前沒有學生帳號。")
     else:
         selected_user = st.selectbox("選擇學生", user_names, key="log_user_select")
-        # drill_logs 存在 student ID 路徑下（非名字），需先查出 ID
-        user_info = db.collection(USER_LIST_PATH).document(selected_user).get().to_dict() or {}
+        user_info = all_users.get(selected_user, {})
         student_id = user_info.get("id", selected_user)
+
+        # --- 學生概覽 ---
+        st.subheader(f"📋 {selected_user} 概覽")
+        plan = user_info.get("plan", "free")
+        plan_expiry = user_info.get("plan_expiry", "")
+        expiry_str = ""
+        if plan_expiry:
+            if hasattr(plan_expiry, "strftime"):
+                expiry_str = plan_expiry.strftime("%Y-%m-%d")
+            else:
+                expiry_str = str(plan_expiry)[:10]
+
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("方案", "Premium" if plan == "premium" else "免費", expiry_str if plan == "premium" else "")
+        col_b.metric("學生 ID", student_id)
+        col_c.metric("顏色", user_info.get("color", "—"))
+
+        # --- 練習時間 ---
+        practice_time = user_info.get("practice_time", {})
+        if practice_time:
+            st.subheader("⏱️ 練習時間")
+            # 按日期排序（最新在前）
+            sorted_dates = sorted(practice_time.keys(), reverse=True)
+            time_rows = []
+            total_seconds = 0
+            for date in sorted_dates:
+                secs = practice_time[date]
+                total_seconds += secs
+                mins = secs // 60
+                time_rows.append({"日期": date, "時長": f"{mins} 分 {secs % 60} 秒"})
+            st.metric("累計練習時間", f"{total_seconds // 60} 分鐘")
+            st.dataframe(time_rows, use_container_width=True, hide_index=True)
+
+        # --- AI 用量 ---
+        ai_usage = user_info.get("ai_usage", {})
+        if ai_usage:
+            st.subheader("🤖 AI 用量")
+            drill_count = ai_usage.get("drill_count", {})
+            speech_tokens = ai_usage.get("speech", {})
+            all_dates = sorted(set(list(drill_count.keys()) + list(speech_tokens.keys())), reverse=True)
+            usage_rows = []
+            for date in all_dates:
+                usage_rows.append({
+                    "日期": date,
+                    "判讀次數": drill_count.get(date, 0),
+                    "語音 Token": speech_tokens.get(date, 0),
+                })
+            st.dataframe(usage_rows, use_container_width=True, hide_index=True)
+
+        # --- 句型進度 ---
+        sentence_stats = user_info.get("sentence_stats", {})
+        if sentence_stats:
+            st.subheader("📖 句型進度")
+            stats_rows = []
+            for ds_id, stats in sentence_stats.items():
+                name = stats.get("name", ds_id)
+                completed = stats.get("completed", 0)
+                total = stats.get("total", 0)
+                last_active = stats.get("last_active", "")[:10]
+                pct = round(completed / total * 100) if total > 0 else 0
+                stats_rows.append({
+                    "句型書": name,
+                    "進度": f"{completed}/{total}（{pct}%）",
+                    "最後練習": last_active,
+                })
+            st.dataframe(stats_rows, use_container_width=True, hide_index=True)
+
+        # --- Drill Logs ---
+        st.subheader("🪵 練習 Log")
         log_path = f"artifacts/{APP_ID}/users/{student_id}/drill_logs"
         log_docs = db.collection(log_path).order_by("started_at", direction=firestore.Query.DESCENDING).limit(20).stream()
         logs = []
@@ -836,26 +906,23 @@ elif menu == "🪵 口說練習 Log":
             logs.append(data)
 
         if not logs:
-            st.info(f"「{selected_user}」目前沒有練習 log。")
+            st.info("目前沒有練習 log。")
         else:
-            st.write(f"共 {len(logs)} 筆（最近 20 筆）")
+            st.write(f"最近 {len(logs)} 筆")
             for log in logs:
                 started = log.get("started_at", "?")
                 template = log.get("template", "?")
                 events = log.get("events", [])
                 device = log.get("device", {})
 
-                # 統計事件類型
                 error_types = [e.get("type", "") for e in events if e.get("type", "") in ("mic_error", "gemini_error", "save_error", "audio_empty")]
                 label = f"{'🔴' if error_types else '🟢'} {started[:19]} — {template[:40]}"
 
                 with st.expander(label):
-                    # 裝置資訊
                     if device:
-                        st.markdown(f"**裝置：** `{device.get('ua', '?')[:80]}`")
+                        st.markdown(f"**裝置：** `{device.get('ua', '?')[:100]}`")
                         st.markdown(f"**螢幕：** {device.get('screen', '?')} / **SR：** {'✅' if device.get('sr') else '❌'} / **平台：** {device.get('platform', '?')}")
 
-                    # 事件列表
                     if events:
                         rows = []
                         for e in events:
