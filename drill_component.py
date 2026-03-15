@@ -23,7 +23,8 @@ def generate_drill_html(template, options, completion_count, api_key, api_url,
                         template_hash, dataset_id, firestore_doc_path,
                         completed_options=None, user_doc_path=None,
                         drill_remaining=-1,
-                        dataset_name="", total_sentences=0):
+                        dataset_name="", total_sentences=0,
+                        tts_rate=0.85):
     """產生句型口說練習的完整 HTML/JS/CSS 元件
 
     firestore_doc_path: e.g. "artifacts/flashcard-pro-v1/users/xxx/sentence_progress/abc123"
@@ -44,7 +45,7 @@ def generate_drill_html(template, options, completion_count, api_key, api_url,
         "datasetId": dataset_id,
         "silenceThreshold": 12,
         "silenceDuration": 1800,
-        "ttsRate": 0.85,
+        "ttsRate": tts_rate,
         "firestoreToken": token,
         "firestoreProject": project_id,
         "firestoreDocPath": firestore_doc_path,
@@ -111,6 +112,14 @@ body.dark .summary-row {{ border-bottom-color:#444; }}
 body.dark .done-btn {{ color:#aaa; border-color:#666; }}
 body.dark .done-btn:hover {{ background:rgba(255,255,255,0.1); }}
 
+.speed-control {{ display:inline-flex; align-items:center; gap:6px; margin:8px 0; }}
+.speed-btn {{ padding:4px 10px; border:1px solid #999; border-radius:14px; background:transparent; color:#666; font-size:0.8rem; cursor:pointer; min-width:28px; text-align:center; }}
+.speed-btn:hover {{ background:rgba(0,0,0,0.05); }}
+.speed-btn.active {{ background:rgba(28,131,225,0.15); color:#0e4da4; border-color:#0e4da4; font-weight:600; }}
+body.dark .speed-btn {{ color:#aaa; border-color:#666; }}
+body.dark .speed-btn:hover {{ background:rgba(255,255,255,0.1); }}
+body.dark .speed-btn.active {{ background:rgba(80,160,255,0.2); color:#7db8ff; border-color:#7db8ff; }}
+
 .drill-feedback {{ margin:10px 0; padding:12px; border-radius:10px; font-size:0.9rem; line-height:1.5; display:none; }}
 .feedback-correct {{ background:rgba(33,195,84,0.1); border:1px solid rgba(33,195,84,0.3); }}
 .feedback-wrong {{ background:rgba(255,100,100,0.1); border:1px solid rgba(255,100,100,0.3); }}
@@ -167,6 +176,12 @@ body.dark .done-btn:hover {{ background:rgba(255,255,255,0.1); }}
     </div>
     <div class="drill-history" id="drill-history"></div>
     <div style="text-align:center; margin:12px 0;">
+        <div class="speed-control" id="speed-control">
+            <span style="font-size:0.8rem; opacity:0.6;">🔊 語速</span>
+            <button class="speed-btn" data-rate="0.5">慢</button>
+            <button class="speed-btn" data-rate="0.85">中</button>
+            <button class="speed-btn" data-rate="1.0">快</button>
+        </div>
         <button class="drill-start-btn" id="start-btn">🎯 開始練習</button>
     </div>
     <div id="drill-complete" class="drill-complete" style="display:none;"></div>
@@ -355,10 +370,11 @@ body.dark .done-btn:hover {{ background:rgba(255,255,255,0.1); }}
             }}
             const rec = new MediaRecorder(S.stream, mimeType ? {{ mimeType }} : {{}});
             rec.ondataavailable = e => {{ if (e.data.size > 0) chunks.push(e.data); }};
+            let _speechDetected = false;
             rec.onstop = () => {{
                 doneBtn.style.display = 'none';
                 doneBtn.onclick = null;
-                resolve(new Blob(chunks, {{ type: mimeType || 'audio/webm' }}));
+                resolve({{ blob: new Blob(chunks, {{ type: mimeType || 'audio/webm' }}), speechDetected: _speechDetected }});
             }};
             rec.start(100);
 
@@ -367,16 +383,23 @@ body.dark .done-btn:hover {{ background:rgba(255,255,255,0.1); }}
             doneBtn.onclick = () => {{ if (rec.state === 'recording') rec.stop(); }};
 
             const MAX_RECORD_MS = 10000;  // 最長錄音 10 秒
-            let silenceStart = null, speechDetected = false, elapsed = 0;
+            let silenceStart = null, speechDetected = false, elapsed = 0, speechFrames = 0;
             const check = () => {{
                 if (rec.state !== 'recording') return;
                 elapsed += 50;
                 const vol = getVolume();
                 updateVolBars(vol);
-                if (vol > threshold) {{ speechDetected = true; silenceStart = null; }}
-                else if (speechDetected) {{
-                    if (!silenceStart) silenceStart = Date.now();
-                    else if (Date.now() - silenceStart > CFG.silenceDuration) {{ rec.stop(); return; }}
+                if (vol > threshold) {{
+                    speechFrames++;
+                    // 需要連續 3 幀（150ms）以上才算真正說話，避免 TTS 殘餘音誤觸發
+                    if (speechFrames >= 3) {{ speechDetected = true; _speechDetected = true; }}
+                    silenceStart = null;
+                }} else {{
+                    speechFrames = 0;
+                    if (speechDetected) {{
+                        if (!silenceStart) silenceStart = Date.now();
+                        else if (Date.now() - silenceStart > CFG.silenceDuration) {{ rec.stop(); return; }}
+                    }}
                 }}
                 // 超時保底：未說話 15 秒 或 錄音達 10 秒
                 if (!speechDetected && elapsed > 15000) {{ rec.stop(); return; }}
@@ -801,14 +824,21 @@ Return JSON:
             showSentence(word);
             await playTTS(sentence);
 
+            // 清空麥克風 buffer，丟棄 TTS 喇叭殘餘音訊
+            if (S.analyser) {{
+                const trash = new Uint8Array(S.analyser.frequencyBinCount);
+                for (let i = 0; i < 5; i++) {{ S.analyser.getByteFrequencyData(trash); await sleep(50); }}
+            }}
+
             setStatus('🎤 請跟著唸...');
 
             // 同時啟動語音辨識（作為 fallback 備用）
             const srPromise = speechRecognize();
-            const audioBlob = await recordUntilSilence();
+            const recResult = await recordUntilSilence();
+            const audioBlob = recResult.blob;
 
-            if (audioBlob.size < 1000) {{
-                logEvent('audio_empty', `size=${{audioBlob.size}}`);
+            if (!recResult.speechDetected || audioBlob.size < 1000) {{
+                logEvent('audio_empty', `size=${{audioBlob.size}},speech=${{recResult.speechDetected}}`);
                 setStatus('😮 沒有偵測到聲音，再試一次...');
                 await sleep(1500);
                 continue;
@@ -984,6 +1014,36 @@ Return JSON:
     }}
 
     function sleep(ms) {{ return new Promise(r => setTimeout(r, ms)); }}
+
+    // === SPEED CONTROL ===
+    function initSpeedControl() {{
+        const btns = document.querySelectorAll('.speed-btn');
+        // 標記目前速度
+        btns.forEach(btn => {{
+            if (parseFloat(btn.dataset.rate) === CFG.ttsRate) btn.classList.add('active');
+            btn.onclick = async () => {{
+                const rate = parseFloat(btn.dataset.rate);
+                CFG.ttsRate = rate;
+                btns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                // 儲存到 Firestore 使用者文件
+                if (CFG.firestoreUserDocPath) {{
+                    const userUrl = `https://firestore.googleapis.com/v1/projects/${{CFG.firestoreProject}}/databases/(default)/documents/${{CFG.firestoreUserDocPath}}`;
+                    try {{
+                        await fetch(userUrl + '?updateMask.fieldPaths=tts_rate', {{
+                            method: 'PATCH',
+                            headers: {{
+                                'Authorization': 'Bearer ' + CFG.firestoreToken,
+                                'Content-Type': 'application/json',
+                            }},
+                            body: JSON.stringify({{ fields: {{ tts_rate: {{ doubleValue: rate }} }} }})
+                        }});
+                    }} catch(e) {{ console.warn('Save tts_rate error:', e); }}
+                }}
+            }};
+        }});
+    }}
+    initSpeedControl();
 
     // === INIT ===
     const doneCount = (CFG.completedOptions || []).length;

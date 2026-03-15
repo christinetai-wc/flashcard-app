@@ -2367,6 +2367,9 @@ else:
             drill_remaining = get_drill_remaining()
             # 取得題庫全部句數（排行榜統計用）
             all_sentences_for_stats = fetch_sentences_by_id(st.session_state.current_dataset_id)
+            # 直接從 Firestore 讀取語速設定（JS 端會即時寫入，不能靠快取的 user_info）
+            _user_doc = db.collection(USER_LIST_PATH).document(user_name).get()
+            saved_tts_rate = _user_doc.to_dict().get("tts_rate", 0.85) if _user_doc.exists else 0.85
             drill_html = generate_drill_html(
                 template=template,
                 options=options,
@@ -2381,6 +2384,7 @@ else:
                 drill_remaining=drill_remaining,
                 dataset_name=book_name,
                 total_sentences=len(all_sentences_for_stats),
+                tts_rate=saved_tts_rate,
             )
             html(drill_html, height=550, scrolling=True)
 
