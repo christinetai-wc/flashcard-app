@@ -825,6 +825,13 @@ Return JSON:
             }}
 
             const result = await evaluate(audioBlob, word, srTranscripts);
+            logEvent('attempt', JSON.stringify({{
+                word,
+                try: S.tries[word],
+                ok: !!result.is_correct,
+                transcript: (result.transcript || '').slice(0, 100),
+                feedback: (result.feedback || '').slice(0, 200),
+            }}));
             showFeedback(word, result);
             renderHistory();
 
