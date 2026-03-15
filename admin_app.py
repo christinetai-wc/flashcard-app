@@ -207,6 +207,40 @@ menu = st.sidebar.radio("管理功能", ["👥 學生管理", "📊 AI 用量統
 if menu == "👥 學生管理":
     st.header("學生管理")
 
+    # 全班訂閱狀態一覽（tab 上方）
+    users = get_users()
+    if users:
+        overview_rows = []
+        for u in users:
+            plan = u.get("plan", "free")
+            expiry = u.get("plan_expiry")
+            note = u.get("plan_note", "")
+
+            if plan == "premium" and expiry:
+                if hasattr(expiry, 'date'):
+                    expiry_date = expiry.date()
+                elif isinstance(expiry, str):
+                    expiry_date = datetime.fromisoformat(expiry).date()
+                else:
+                    expiry_date = None
+
+                if expiry_date and expiry_date >= datetime.now().date():
+                    status_display = f"💎 Premium（到期：{expiry_date}）"
+                else:
+                    status_display = f"⚠️ 已過期（{expiry_date}）"
+            else:
+                status_display = "🆓 免費"
+
+            overview_rows.append({
+                "姓名": u.get("name", ""),
+                "學號": u.get("id", ""),
+                "訂閱狀態": status_display,
+                "備註": note
+            })
+
+        st.dataframe(pd.DataFrame(overview_rows), use_container_width=True, hide_index=True)
+        st.divider()
+
     tab_create, tab_manage, tab_subscription = st.tabs(["➕ 新增學生", "✏️ 編輯/刪除學生", "💎 訂閱管理"])
 
     # --- 分頁 1: 新增 ---
@@ -287,42 +321,6 @@ if menu == "👥 學生管理":
         if not users:
             st.info("目前無使用者資料。")
         else:
-            # 總覽表格
-            st.subheader("📋 全班訂閱狀態一覽")
-            overview_rows = []
-            for u in users:
-                plan = u.get("plan", "free")
-                expiry = u.get("plan_expiry")
-                note = u.get("plan_note", "")
-
-                if plan == "premium" and expiry:
-                    if hasattr(expiry, 'date'):
-                        expiry_date = expiry.date()
-                    elif isinstance(expiry, str):
-                        expiry_date = datetime.fromisoformat(expiry).date()
-                    else:
-                        expiry_date = None
-
-                    if expiry_date and expiry_date >= datetime.now().date():
-                        status_display = f"💎 Premium（到期：{expiry_date}）"
-                    else:
-                        status_display = f"⚠️ 已過期（{expiry_date}）"
-                else:
-                    status_display = "🆓 免費"
-                    expiry_date = None
-
-                overview_rows.append({
-                    "姓名": u.get("name", ""),
-                    "學號": u.get("id", ""),
-                    "訂閱狀態": status_display,
-                    "備註": note
-                })
-
-            st.dataframe(pd.DataFrame(overview_rows), use_container_width=True, hide_index=True)
-
-            st.divider()
-
-            # 開通 / 管理
             st.subheader("🔧 開通或調整訂閱")
 
             user_names = [u['name'] for u in users]
