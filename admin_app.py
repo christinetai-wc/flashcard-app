@@ -824,7 +824,10 @@ elif menu == "🪵 口說練習 Log":
         st.info("目前沒有學生帳號。")
     else:
         selected_user = st.selectbox("選擇學生", user_names, key="log_user_select")
-        log_path = f"artifacts/{APP_ID}/users/{selected_user}/drill_logs"
+        # drill_logs 存在 student ID 路徑下（非名字），需先查出 ID
+        user_info = db.collection(USER_LIST_PATH).document(selected_user).get().to_dict() or {}
+        student_id = user_info.get("id", selected_user)
+        log_path = f"artifacts/{APP_ID}/users/{student_id}/drill_logs"
         log_docs = db.collection(log_path).order_by("started_at", direction=firestore.Query.DESCENDING).limit(20).stream()
         logs = []
         for d in log_docs:
