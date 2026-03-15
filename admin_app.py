@@ -199,7 +199,7 @@ def get_sentences_content(book_id):
 # --- UI 介面 ---
 st.title("⚙️ Flashcard 後台管理系統")
 
-menu = st.sidebar.radio("管理功能", ["👥 學生帳號管理", "💎 訂閱管理", "📊 AI 用量統計", "📥 匯入句型書 (CSV)", "📝 編輯現有句型書", "📚 管理公用單字集"])
+menu = st.sidebar.radio("管理功能", ["👥 學生帳號管理", "💎 訂閱管理", "📊 AI 用量統計", "📥 匯入句型書 (CSV)", "📝 編輯現有句型書", "📚 管理公用單字集", "🪵 口說練習 Log"])
 
 # ==========================================
 # 功能 1: 學生帳號管理 (新增 / 編輯 / 刪除)
@@ -808,3 +808,59 @@ elif menu == "📚 管理公用單字集":
                     st.session_state._confirm_del_sv_id = cat["doc_id"]
                     st.session_state._confirm_del_sv_name = cat.get("name", cat["doc_id"])
                     confirm_delete_shared_vocab()
+
+# ==========================================
+# 功能 7: 口說練習 Log
+# ==========================================
+elif menu == "🪵 口說練習 Log":
+    st.header("口說練習 Log")
+    st.caption("查看學生口說練習的錯誤紀錄與裝置資訊")
+
+    # 取得所有學生
+    user_docs = db.collection(USER_LIST_PATH).stream()
+    user_names = sorted([d.id for d in user_docs])
+
+    if not user_names:
+        st.info("目前沒有學生帳號。")
+    else:
+        selected_user = st.selectbox("選擇學生", user_names, key="log_user_select")
+        log_path = f"artifacts/{APP_ID}/users/{selected_user}/drill_logs"
+        log_docs = db.collection(log_path).order_by("started_at", direction=firestore.Query.DESCENDING).limit(20).stream()
+        logs = []
+        for d in log_docs:
+            data = d.to_dict()
+            data["_id"] = d.id
+            logs.append(data)
+
+        if not logs:
+            st.info(f"「{selected_user}」目前沒有練習 log。")
+        else:
+            st.write(f"共 {len(logs)} 筆（最近 20 筆）")
+            for log in logs:
+                started = log.get("started_at", "?")
+                template = log.get("template", "?")
+                events = log.get("events", [])
+                device = log.get("device", {})
+
+                # 統計事件類型
+                error_types = [e.get("type", "") for e in events if e.get("type", "").endswith("error") or e.get("type", "") in ("sr_empty", "sr_disabled", "audio_empty", "gemini_quota")]
+                label = f"{'🔴' if error_types else '🟢'} {started[:19]} — {template[:40]}"
+
+                with st.expander(label):
+                    # 裝置資訊
+                    if device:
+                        st.markdown(f"**裝置：** `{device.get('ua', '?')[:80]}`")
+                        st.markdown(f"**螢幕：** {device.get('screen', '?')} / **SR：** {'✅' if device.get('sr') else '❌'} / **平台：** {device.get('platform', '?')}")
+
+                    # 事件列表
+                    if events:
+                        rows = []
+                        for e in events:
+                            rows.append({
+                                "時間": e.get("t", "?")[11:19] if len(e.get("t", "")) > 19 else e.get("t", "?"),
+                                "類型": e.get("type", ""),
+                                "詳情": e.get("detail", ""),
+                            })
+                        st.dataframe(rows, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("無事件紀錄")

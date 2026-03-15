@@ -212,6 +212,51 @@ body.dark .done-btn:hover {{ background:rgba(255,255,255,0.1); }}
         vadThreshold: CFG.silenceThreshold,  // VAD 門檻，startDrill 時偵測一次
     }};
 
+    // === Error Log ===
+    const _logSessionId = Date.now().toString();
+    const _logEvents = [];
+    const _logDevice = {{
+        ua: navigator.userAgent,
+        platform: navigator.platform || '',
+        screen: `${{screen.width}}x${{screen.height}}`,
+        sr: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+    }};
+
+    function logEvent(type, detail) {{
+        _logEvents.push({{
+            t: new Date().toISOString(),
+            type,
+            detail: typeof detail === 'object' ? JSON.stringify(detail) : String(detail || ''),
+        }});
+    }}
+
+    async function flushLog() {{
+        if (_logEvents.length === 0) return;
+        // 從 firestoreDocPath 取得 user base path: artifacts/{APP_ID}/users/{student_id}
+        const parts = CFG.firestoreDocPath.split('/');
+        const basePath = parts.slice(0, 4).join('/');
+        const logUrl = `https://firestore.googleapis.com/v1/projects/${{CFG.firestoreProject}}/databases/(default)/documents/${{basePath}}/drill_logs/${{_logSessionId}}`;
+        const data = {{
+            started_at: new Date(parseInt(_logSessionId)).toISOString(),
+            device: _logDevice,
+            template: CFG.template,
+            dataset_id: CFG.datasetId,
+            events: _logEvents,
+        }};
+        const fields = {{}};
+        for (const [k, v] of Object.entries(data)) fields[k] = toFsValue(v);
+        try {{
+            await fetch(logUrl, {{
+                method: 'PATCH',
+                headers: {{
+                    'Authorization': 'Bearer ' + CFG.firestoreToken,
+                    'Content-Type': 'application/json',
+                }},
+                body: JSON.stringify({{ fields }})
+            }});
+        }} catch(e) {{ console.error('Log flush error:', e); }}
+    }}
+
     // === UI ===
     function renderOptions() {{
         $('drill-options').innerHTML = CFG.options.map((opt, i) => {{
@@ -456,6 +501,7 @@ Return JSON:
                 const result = await callGeminiWithModel(model, base64, mimeType, prompt);
                 if (result === 'quota') {{
                     console.warn('[Drill] ' + model + ' quota exceeded, trying next...');
+                    logEvent('gemini_quota', model);
                     modelIdx = i + 1; // 之後直接跳過這個模型
                     continue;
                 }}
@@ -469,6 +515,7 @@ Return JSON:
                 }}
             }} catch(e) {{
                 console.warn('[Drill] ' + model + ' error:', e.message);
+                logEvent('gemini_error', `${{model}}: ${{e.message}}`);
                 return {{ is_correct: false, transcript: '', feedback: '分析失敗：' + e.message }};
             }}
         }}
@@ -762,6 +809,7 @@ Return JSON:
             const audioBlob = await recordUntilSilence();
 
             if (audioBlob.size < 1000) {{
+                logEvent('audio_empty', `size=${{audioBlob.size}}`);
                 setStatus('😮 沒有偵測到聲音，再試一次...');
                 await sleep(1500);
                 continue;
@@ -776,8 +824,10 @@ Return JSON:
             const srEmpty = !srTranscripts || srTranscripts.length === 0 || srTranscripts.every(t => !t.trim());
             if (srEmpty) {{
                 _srConsecutiveFails++;
+                logEvent('sr_empty', `fails=${{_srConsecutiveFails}} word=${{word}}`);
                 if (_srConsecutiveFails >= 1) {{
                     console.log('[SR] 預篩失敗，停用預篩，改為直接送 AI');
+                    logEvent('sr_disabled', '預篩停用，改直接送 AI');
                     _srAvailable = false;
                 }}
             }} else {{
@@ -853,7 +903,10 @@ Return JSON:
             const noiseFloor = await measureNoiseFloor();
             S.vadThreshold = Math.max(CFG.silenceThreshold, noiseFloor * 1.5);
             console.log('[VAD] noise floor:', noiseFloor.toFixed(1), 'threshold:', S.vadThreshold.toFixed(1));
+            logEvent('vad_init', `noise=${{noiseFloor.toFixed(1)}} threshold=${{S.vadThreshold.toFixed(1)}}`);
         }} catch (e) {{
+            logEvent('mic_error', e.message || e.name || 'unknown');
+            flushLog();
             setStatus('❌ 無法存取麥克風，請允許麥克風權限後重新整理頁面');
             $('start-btn').disabled = false;
             $('start-btn').style.display = 'inline-block';
@@ -887,6 +940,7 @@ Return JSON:
             if (finalDelta > 0) await savePracticeTime(finalDelta);
         }} catch(e) {{
             console.error('Save error:', e);
+            logEvent('save_error', e.message || 'unknown');
             newCount = CFG.completionCount + 1;
             setStatus('⚠️ 儲存失敗，但練習已完成');
         }}
@@ -918,6 +972,10 @@ Return JSON:
         setStatus('✅ 成績已儲存');
         // 慶祝灑花
         launchConfetti();
+
+        // 寫入 drill log
+        logEvent('drill_complete', `round=${{newCount}}`);
+        flushLog();
 
         if (S.stream) S.stream.getTracks().forEach(t => t.stop());
     }}
