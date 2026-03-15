@@ -480,6 +480,7 @@ Return JSON:
 
     // === 瀏覽器語音辨識（錄音時同步執行） ===
     let _srAvailable = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    let _srConsecutiveFails = 0;
 
     function speechRecognize() {{
         return new Promise(resolve => {{
@@ -771,7 +772,18 @@ Return JSON:
 
             // 預篩：SpeechRecognition 可用且完全沒辨識到 → 不送 Gemini，省 token
             // 如果 SR 不可用（如 iOS iframe），跳過預篩直接送 Gemini
-            if (_srAvailable && (!srTranscripts || srTranscripts.length === 0 || srTranscripts.every(t => !t.trim()))) {{
+            // 連續失敗 N 次後自動停用預篩（裝置 SR 不可靠時）
+            const srEmpty = !srTranscripts || srTranscripts.length === 0 || srTranscripts.every(t => !t.trim());
+            if (srEmpty) {{
+                _srConsecutiveFails++;
+                if (_srConsecutiveFails >= 1) {{
+                    console.log('[SR] 預篩失敗，停用預篩，改為直接送 AI');
+                    _srAvailable = false;
+                }}
+            }} else {{
+                _srConsecutiveFails = 0;
+            }}
+            if (_srAvailable && srEmpty) {{
                 showFeedback(word, {{ is_correct: false, transcript: '', feedback: '沒有偵測到語音內容，請對著麥克風清楚地唸出句子。' }});
                 renderHistory();
                 setStatus('再唸一次...');
