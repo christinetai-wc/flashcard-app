@@ -1309,7 +1309,10 @@ with st.sidebar:
         st.caption(f"⏱️ 今日練習：{mins} 分鐘")
         st.divider()
         # 綁定選單狀態至 nav_selection
-        menu =st.radio("功能選單", ["學習儀表板", "單字管理", "單字練習", "句型口說"], key="nav_selection")
+        menu_options = ["學習儀表板", "單字管理", "單字練習", "句型口說"]
+        if user.get("role") == "admin":
+            menu_options.append("⚙️ 後台管理")
+        menu =st.radio("功能選單", menu_options, key="nav_selection")
         if st.button("登出", use_container_width=True):
             save_practice_time()
             # 清除記住的登入資訊 Cookie
@@ -1667,6 +1670,7 @@ else:
             books_data = {}
 
             for uid, u_data in all_users.items():
+                if u_data.get("role") == "admin": continue
                 s_stats = u_data.get("sentence_stats", {})
                 if not s_stats: continue
 
@@ -1678,10 +1682,12 @@ else:
                     completed = stat.get('completed', 0)
                     book_name = stat.get('name', book_id)
 
-                    # 將 Timestamp 轉換為字串
+                    # 將 Timestamp 轉換為可讀格式
                     last_active = stat.get('last_active')
-                    if hasattr(last_active, 'date'):
-                        last_active_str = last_active.strftime("%m-%d %H:%M")
+                    if hasattr(last_active, 'strftime'):
+                        last_active_str = last_active.strftime("%Y-%m-%d %H:%M:%S")
+                    elif isinstance(last_active, str) and len(last_active) >= 19:
+                        last_active_str = last_active[:10] + " " + last_active[11:19]
                     else:
                         last_active_str = str(last_active) if last_active else ""
 
@@ -2379,6 +2385,10 @@ else:
             html(drill_html, height=550, scrolling=True)
 
             keyboard_bridge()
+
+    elif menu == "⚙️ 後台管理":
+        from admin_app import render_admin
+        render_admin(db, APP_ID)
 
 st.divider()
 st.caption("Flashcard Pro - 資料已加密並同步至 Firestore")
