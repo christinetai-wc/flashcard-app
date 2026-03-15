@@ -385,17 +385,6 @@ if menu == "👥 學生管理":
                         st.session_state._confirm_revoke_note = current_note
                         confirm_revoke_premium()
 
-    # 所有使用者一覽
-    st.divider()
-    st.caption("目前所有使用者一覽：")
-    users = get_users()
-    if users:
-        df_users = pd.DataFrame(users)
-        display_cols = ['name', 'id', 'color']
-        if 'plan' in df_users.columns:
-            display_cols.append('plan')
-        st.dataframe(df_users[display_cols], use_container_width=True)
-
 # ==========================================
 # 功能 3: AI 用量統計
 # ==========================================
