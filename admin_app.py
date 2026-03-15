@@ -199,15 +199,15 @@ def get_sentences_content(book_id):
 # --- UI 介面 ---
 st.title("⚙️ Flashcard 後台管理系統")
 
-menu = st.sidebar.radio("管理功能", ["👥 學生帳號管理", "💎 訂閱管理", "📊 AI 用量統計", "📥 匯入句型書 (CSV)", "📝 編輯現有句型書", "📚 管理公用單字集", "🔍 學生詳情"])
+menu = st.sidebar.radio("管理功能", ["👥 學生管理", "📊 AI 用量統計", "📥 匯入句型書 (CSV)", "📝 編輯現有句型書", "📚 管理公用單字集", "🔍 學生詳情"])
 
 # ==========================================
-# 功能 1: 學生帳號管理 (新增 / 編輯 / 刪除)
+# 功能 1: 學生管理（帳號 + 訂閱）
 # ==========================================
-if menu == "👥 學生帳號管理":
-    st.header("學生帳號管理")
-    
-    tab_create, tab_manage = st.tabs(["➕ 新增學生", "✏️ 編輯/刪除學生"])
+if menu == "👥 學生管理":
+    st.header("學生管理")
+
+    tab_create, tab_manage, tab_subscription = st.tabs(["➕ 新增學生", "✏️ 編輯/刪除學生", "💎 訂閱管理"])
 
     # --- 分頁 1: 新增 ---
     with tab_create:
@@ -216,13 +216,13 @@ if menu == "👥 學生帳號管理":
             c1, c2 = st.columns(2)
             name = c1.text_input("姓名 (作為登入帳號)", placeholder="例如: Neo")
             sid = c2.text_input("學號 (Student ID)", placeholder="例如: S002")
-            
+
             c3, c4 = st.columns(2)
             pwd = c3.text_input("密碼 (將自動加密)", type="password")
             color = c4.color_picker("代表色", "#1E90FF")
-            
+
             submitted = st.form_submit_button("儲存使用者")
-            
+
             if submitted:
                 if name and sid and pwd:
                     user_data = {
@@ -246,21 +246,21 @@ if menu == "👥 學生帳號管理":
         else:
             user_names = [u['name'] for u in users]
             selected_user_name = st.selectbox("請選擇要管理的使用者：", user_names)
-            
+
             target_user = next((u for u in users if u['name'] == selected_user_name), None)
-            
+
             if target_user:
                 st.divider()
                 col_edit, col_del = st.columns([2, 1])
-                
+
                 with col_edit:
                     with st.form("edit_user_form"):
                         st.subheader(f"編輯資料: {selected_user_name}")
-                        
+
                         new_sid = st.text_input("學號", value=target_user.get('id', ''))
                         new_color = st.color_picker("代表色", value=target_user.get('color', '#000000'))
                         new_pwd = st.text_input("重設密碼 (若不修改請留空)", type="password")
-                        
+
                         if st.form_submit_button("💾 更新資料"):
                             update_data = {
                                 "id": new_sid,
@@ -268,140 +268,133 @@ if menu == "👥 學生帳號管理":
                             }
                             if new_pwd:
                                 update_data["password"] = hash_password(new_pwd)
-                            
+
                             db.collection(USER_LIST_PATH).document(selected_user_name).update(update_data)
                             st.success(f"使用者 {selected_user_name} 更新成功！")
                             time.sleep(1)
                             st.rerun()
-                
+
                 with col_del:
                     st.subheader("危險區域")
                     st.write("刪除後該使用者將無法登入。")
                     if st.button(f"🗑️ 刪除使用者 {selected_user_name}"):
                         st.session_state._confirm_delete_user = selected_user_name
                         confirm_delete_user()
-    
+
+    # --- 分頁 3: 訂閱管理 ---
+    with tab_subscription:
+        users = get_users()
+        if not users:
+            st.info("目前無使用者資料。")
+        else:
+            # 總覽表格
+            st.subheader("📋 全班訂閱狀態一覽")
+            overview_rows = []
+            for u in users:
+                plan = u.get("plan", "free")
+                expiry = u.get("plan_expiry")
+                note = u.get("plan_note", "")
+
+                if plan == "premium" and expiry:
+                    if hasattr(expiry, 'date'):
+                        expiry_date = expiry.date()
+                    elif isinstance(expiry, str):
+                        expiry_date = datetime.fromisoformat(expiry).date()
+                    else:
+                        expiry_date = None
+
+                    if expiry_date and expiry_date >= datetime.now().date():
+                        status_display = f"💎 Premium（到期：{expiry_date}）"
+                    else:
+                        status_display = f"⚠️ 已過期（{expiry_date}）"
+                else:
+                    status_display = "🆓 免費"
+                    expiry_date = None
+
+                overview_rows.append({
+                    "姓名": u.get("name", ""),
+                    "學號": u.get("id", ""),
+                    "訂閱狀態": status_display,
+                    "備註": note
+                })
+
+            st.dataframe(pd.DataFrame(overview_rows), use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # 開通 / 管理
+            st.subheader("🔧 開通或調整訂閱")
+
+            user_names = [u['name'] for u in users]
+            selected_name = st.selectbox("選擇學生", user_names, key="sub_user_select")
+            target_user = next((u for u in users if u['name'] == selected_name), None)
+
+            if target_user:
+                current_plan = target_user.get("plan", "free")
+                current_expiry = target_user.get("plan_expiry")
+                current_note = target_user.get("plan_note", "")
+
+                if current_plan == "premium" and current_expiry:
+                    if hasattr(current_expiry, 'date'):
+                        exp_str = str(current_expiry.date())
+                    elif isinstance(current_expiry, str):
+                        exp_str = current_expiry[:10]
+                    else:
+                        exp_str = str(current_expiry)
+                    st.info(f"目前方案：💎 Premium，到期日：{exp_str}")
+                else:
+                    st.info("目前方案：🆓 免費")
+
+                col_activate, col_revoke = st.columns(2)
+
+                with col_activate:
+                    with st.form("activate_premium_form"):
+                        st.markdown("**開通 Premium**")
+                        duration_days = st.selectbox("訂閱天數", [30, 60, 90, 180, 365], index=0)
+                        note = st.text_input("備註（如收款紀錄）", placeholder="例如：3/1 Line Pay 收到 $149")
+
+                        if st.form_submit_button("💎 開通 Premium", type="primary"):
+                            new_expiry = datetime.now() + timedelta(days=duration_days)
+
+                            if current_plan == "premium" and current_expiry:
+                                if hasattr(current_expiry, 'date'):
+                                    existing_date = datetime.combine(current_expiry.date(), datetime.min.time())
+                                elif isinstance(current_expiry, str):
+                                    existing_date = datetime.fromisoformat(current_expiry)
+                                else:
+                                    existing_date = datetime.now()
+
+                                if existing_date > datetime.now():
+                                    new_expiry = existing_date + timedelta(days=duration_days)
+
+                            update_data = {
+                                "plan": "premium",
+                                "plan_expiry": new_expiry,
+                                "plan_note": note if note else current_note
+                            }
+                            db.collection(USER_LIST_PATH).document(selected_name).update(update_data)
+                            st.success(f"已開通 {selected_name} 的 Premium，到期日：{new_expiry.strftime('%Y-%m-%d')}")
+                            time.sleep(1)
+                            st.rerun()
+
+                with col_revoke:
+                    st.markdown("**取消 Premium**")
+                    st.caption("將立即降級為免費方案。")
+                    if st.button(f"🔄 取消 {selected_name} 的 Premium"):
+                        st.session_state._confirm_revoke_name = selected_name
+                        st.session_state._confirm_revoke_note = current_note
+                        confirm_revoke_premium()
+
+    # 所有使用者一覽
     st.divider()
     st.caption("目前所有使用者一覽：")
+    users = get_users()
     if users:
         df_users = pd.DataFrame(users)
         display_cols = ['name', 'id', 'color']
         if 'plan' in df_users.columns:
             display_cols.append('plan')
         st.dataframe(df_users[display_cols], use_container_width=True)
-
-# ==========================================
-# 功能 2: 訂閱管理
-# ==========================================
-elif menu == "💎 訂閱管理":
-    st.header("訂閱管理")
-
-    users = get_users()
-    if not users:
-        st.info("目前無使用者資料。")
-    else:
-        # --- 總覽表格 ---
-        st.subheader("📋 全班訂閱狀態一覽")
-        overview_rows = []
-        for u in users:
-            plan = u.get("plan", "free")
-            expiry = u.get("plan_expiry")
-            note = u.get("plan_note", "")
-
-            # 判斷到期狀態
-            if plan == "premium" and expiry:
-                if hasattr(expiry, 'date'):
-                    expiry_date = expiry.date()
-                elif isinstance(expiry, str):
-                    expiry_date = datetime.fromisoformat(expiry).date()
-                else:
-                    expiry_date = None
-
-                if expiry_date and expiry_date >= datetime.now().date():
-                    status_display = f"💎 Premium（到期：{expiry_date}）"
-                else:
-                    status_display = f"⚠️ 已過期（{expiry_date}）"
-            else:
-                status_display = "🆓 免費"
-                expiry_date = None
-
-            overview_rows.append({
-                "姓名": u.get("name", ""),
-                "學號": u.get("id", ""),
-                "訂閱狀態": status_display,
-                "備註": note
-            })
-
-        st.dataframe(pd.DataFrame(overview_rows), use_container_width=True, hide_index=True)
-
-        st.divider()
-
-        # --- 開通 / 管理 ---
-        st.subheader("🔧 開通或調整訂閱")
-
-        user_names = [u['name'] for u in users]
-        selected_name = st.selectbox("選擇學生", user_names, key="sub_user_select")
-        target_user = next((u for u in users if u['name'] == selected_name), None)
-
-        if target_user:
-            current_plan = target_user.get("plan", "free")
-            current_expiry = target_user.get("plan_expiry")
-            current_note = target_user.get("plan_note", "")
-
-            # 顯示目前狀態
-            if current_plan == "premium" and current_expiry:
-                if hasattr(current_expiry, 'date'):
-                    exp_str = str(current_expiry.date())
-                elif isinstance(current_expiry, str):
-                    exp_str = current_expiry[:10]
-                else:
-                    exp_str = str(current_expiry)
-                st.info(f"目前方案：💎 Premium，到期日：{exp_str}")
-            else:
-                st.info("目前方案：🆓 免費")
-
-            col_activate, col_revoke = st.columns(2)
-
-            # 開通 Premium
-            with col_activate:
-                with st.form("activate_premium_form"):
-                    st.markdown("**開通 Premium**")
-                    duration_days = st.selectbox("訂閱天數", [30, 60, 90, 180, 365], index=0)
-                    note = st.text_input("備註（如收款紀錄）", placeholder="例如：3/1 Line Pay 收到 $149")
-
-                    if st.form_submit_button("💎 開通 Premium", type="primary"):
-                        new_expiry = datetime.now() + timedelta(days=duration_days)
-
-                        # 如果目前是 Premium 且未過期，從現有到期日延長
-                        if current_plan == "premium" and current_expiry:
-                            if hasattr(current_expiry, 'date'):
-                                existing_date = datetime.combine(current_expiry.date(), datetime.min.time())
-                            elif isinstance(current_expiry, str):
-                                existing_date = datetime.fromisoformat(current_expiry)
-                            else:
-                                existing_date = datetime.now()
-
-                            if existing_date > datetime.now():
-                                new_expiry = existing_date + timedelta(days=duration_days)
-
-                        update_data = {
-                            "plan": "premium",
-                            "plan_expiry": new_expiry,
-                            "plan_note": note if note else current_note
-                        }
-                        db.collection(USER_LIST_PATH).document(selected_name).update(update_data)
-                        st.success(f"已開通 {selected_name} 的 Premium，到期日：{new_expiry.strftime('%Y-%m-%d')}")
-                        time.sleep(1)
-                        st.rerun()
-
-            # 取消 Premium
-            with col_revoke:
-                st.markdown("**取消 Premium**")
-                st.caption("將立即降級為免費方案。")
-                if st.button(f"🔄 取消 {selected_name} 的 Premium"):
-                    st.session_state._confirm_revoke_name = selected_name
-                    st.session_state._confirm_revoke_note = current_note
-                    confirm_revoke_premium()
 
 # ==========================================
 # 功能 3: AI 用量統計
