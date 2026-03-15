@@ -232,7 +232,7 @@ body.dark .done-btn:hover {{ background:rgba(255,255,255,0.1); }}
 
     async function flushLog() {{
         if (_logEvents.length === 0) return;
-        // 從 firestoreDocPath 取得 user base path: artifacts/{APP_ID}/users/{student_id}
+        // 從 firestoreDocPath 取得 user base path（前 4 段）
         const parts = CFG.firestoreDocPath.split('/');
         const basePath = parts.slice(0, 4).join('/');
         const logUrl = `https://firestore.googleapis.com/v1/projects/${{CFG.firestoreProject}}/databases/(default)/documents/${{basePath}}/drill_logs/${{_logSessionId}}`;
