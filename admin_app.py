@@ -846,7 +846,7 @@ elif menu == "🪵 口說練習 Log":
                 device = log.get("device", {})
 
                 # 統計事件類型
-                error_types = [e.get("type", "") for e in events if e.get("type", "").endswith("error") or e.get("type", "") in ("sr_empty", "sr_disabled", "audio_empty", "gemini_quota")]
+                error_types = [e.get("type", "") for e in events if e.get("type", "") in ("mic_error", "gemini_error", "save_error", "audio_empty")]
                 label = f"{'🔴' if error_types else '🟢'} {started[:19]} — {template[:40]}"
 
                 with st.expander(label):
