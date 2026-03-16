@@ -9,7 +9,7 @@ import os
 import base64
 import string
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from google.cloud import firestore
 from google.oauth2 import service_account
 from streamlit.components.v1 import html
@@ -1289,7 +1289,7 @@ with st.sidebar:
         remembered_pwd = cookie_controller.get("remembered_pwd")
 
         # 名稱選單：可從列表選，也可打字搜尋
-        user_names = sorted(users_db.keys())
+        user_names = sorted(k for k, v in users_db.items() if v.get('role') != 'admin')
         default_idx = 0
         if remembered_user and remembered_user in user_names:
             default_idx = user_names.index(remembered_user) + 1  # +1 因為有空白選項
@@ -1326,8 +1326,18 @@ with st.sidebar:
                 else:
                     ok, msg = register_new_user(reg_name, reg_pwd)
                     if ok:
-                        st.success(msg)
-                        st.info("請在上方選擇你的名稱並登入。")
+                        # 註冊成功，直接自動登入
+                        fresh_users = fetch_users_list()
+                        if reg_name in fresh_users:
+                            st.session_state.logged_in = True
+                            st.session_state.current_user_name = reg_name
+                            st.session_state.user_info = fresh_users[reg_name]
+                            sync_vocab_from_db(init_if_empty=False)
+                            st.session_state.practice_seconds_today = 0
+                            st.session_state.practice_last_active = None
+                            cookie_controller.set("remembered_user", reg_name, max_age=30*24*60*60)
+                            cookie_controller.set("remembered_pwd", reg_pwd, max_age=30*24*60*60)
+                            st.toast(f"✅ 歡迎 {reg_name}，享有 7 天免費 Premium 試用！")
                         st.rerun()
                     else:
                         st.error(msg)
@@ -1734,14 +1744,20 @@ else:
                     completed = stat.get('completed', 0)
                     book_name = stat.get('name', book_id)
 
-                    # 將 Timestamp 轉換為可讀格式
+                    # 將 Timestamp 轉換為台灣時間
                     last_active = stat.get('last_active')
-                    if hasattr(last_active, 'strftime'):
-                        last_active_str = last_active.strftime("%Y-%m-%d %H:%M:%S")
+                    last_active_str = ""
+                    if hasattr(last_active, 'astimezone'):
+                        last_active_str = last_active.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+                    elif hasattr(last_active, 'strftime'):
+                        last_active_str = last_active.strftime("%Y-%m-%d %H:%M")
                     elif isinstance(last_active, str) and len(last_active) >= 19:
-                        last_active_str = last_active[:10] + " " + last_active[11:19]
-                    else:
-                        last_active_str = str(last_active) if last_active else ""
+                        try:
+                            utc_dt = datetime.fromisoformat(last_active.replace('Z', '+00:00'))
+                            tw_dt = utc_dt.astimezone(timezone(timedelta(hours=8)))
+                            last_active_str = tw_dt.strftime("%Y-%m-%d %H:%M")
+                        except:
+                            last_active_str = last_active[:10] + " " + last_active[11:16]
 
                     if book_name not in books_data:
                         books_data[book_name] = []
@@ -1762,7 +1778,7 @@ else:
                     st.markdown(f"#### 📘 {book_name}")
 
                     current_user = st.session_state.get("current_user_name", "")
-                    for rank, s in enumerate(students_sorted, 1):
+                    for rank, s in enumerate(students_sorted[:5], 1):
                         pct = int(s['rate'] * 100)
                         if rank == 1: rank_display = "🥇"
                         elif rank == 2: rank_display = "🥈"
@@ -1770,13 +1786,12 @@ else:
                         else: rank_display = f"{rank}."
 
                         is_me = s['student'] == current_user
-                        row_style = "background: rgba(255,193,7,0.15); border-left: 3px solid #FFC107; padding-left: 6px; border-radius: 4px;" if is_me else ""
+                        row_style = "background: rgba(255,193,7,0.15); border-radius: 4px;" if is_me else ""
                         name_style = "font-weight: 700;" if is_me else ""
-                        me_tag = " 👈" if is_me else ""
 
                         bar_html = f"""
                         <div style="display: flex; align-items: center; margin-bottom: 6px; font-size: 0.9rem; {row_style}">
-                            <div style="width: 80px; min-width: 80px; {name_style}">{rank_display} {s['student']}{me_tag}</div>
+                            <div style="min-width: 100px; white-space: nowrap; {name_style}">{rank_display} {s['student']}</div>
                             <div style="flex-grow: 1; background-color: #e0e0e0; border-radius: 6px; height: 14px; margin: 0 10px; overflow: hidden;">
                                 <div style="width: {pct}%; background-color: #4CAF50; height: 100%;"></div>
                             </div>
