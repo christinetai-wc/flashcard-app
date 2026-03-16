@@ -1201,7 +1201,7 @@ def navigate_to_sentence(book, cat):
 
 def attempt_login():
     """處理登入的 Callback 函式"""
-    input_name = st.session_state.login_user_name.strip()
+    input_name = (st.session_state.login_user_name or "").strip()
     input_password = st.session_state.login_password
     users_db = st.session_state.users_db_cache
 
@@ -1244,10 +1244,17 @@ with st.sidebar:
         remembered_user = cookie_controller.get("remembered_user")
         remembered_pwd = cookie_controller.get("remembered_pwd")
 
-        st.text_input(
-            "輸入名稱",
-            value=remembered_user or "",
-            key="login_user_name"
+        # 名稱選單：可從列表選，也可打字搜尋
+        user_names = sorted(users_db.keys())
+        default_idx = 0
+        if remembered_user and remembered_user in user_names:
+            default_idx = user_names.index(remembered_user) + 1  # +1 因為有空白選項
+        st.selectbox(
+            "選擇或搜尋名稱",
+            options=[""] + user_names,
+            index=default_idx,
+            key="login_user_name",
+            placeholder="輸入名稱搜尋...",
         )
 
         st.text_input(
