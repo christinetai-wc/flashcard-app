@@ -2455,9 +2455,6 @@ else:
             fs_doc_path = f"artifacts/{APP_ID}/users/{user_id}/sentence_progress/{template_hash}"
             user_doc_path = f"{USER_LIST_PATH}/{user_name}"
             drill_remaining = get_drill_remaining()
-            if drill_remaining != -1 and st.session_state.user_info.get("plan") == "premium":
-                st.error(f"⚠️ DEBUG: Premium 用戶但 drill_remaining={drill_remaining}，強制修正為 -1")
-                drill_remaining = -1
             # 取得題庫全部句數（排行榜統計用）
             all_sentences_for_stats = fetch_sentences_by_id(st.session_state.current_dataset_id)
             # 直接從 Firestore 讀取語速設定（JS 端會即時寫入，不能靠快取的 user_info）
