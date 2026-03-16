@@ -54,7 +54,15 @@ exports.geminiProxy = onRequest(
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents, generationConfig }),
+        body: JSON.stringify({
+          contents,
+          generationConfig,
+          // 關閉 thinking 以降低 token 費用（口說判讀不需要深度思考）
+          generationConfig: {
+            ...generationConfig,
+            thinkingConfig: { thinkingBudget: 0 },
+          },
+        }),
       });
 
       const status = response.status;

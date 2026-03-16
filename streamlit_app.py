@@ -710,9 +710,9 @@ def check_audio_batch(audio_file, template, options_list):
                 {"inline_data": {"mime_type": audio_mime, "data": encoded_audio}}
             ]
         }],
-        "generationConfig": {"responseMimeType": "application/json"}
+        "generationConfig": {"responseMimeType": "application/json", "thinkingConfig": {"thinkingBudget": 0}}
     }
-    
+
     token_count = 0
     try:
         print(f"[Gemini Speech] Calling API... model={GEMINI_MODEL}")
@@ -849,7 +849,7 @@ Requirements:
     
     prompt = f"{base_prompt}\n\nInput words:\n{words_text}"
 
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}}
     try:
         res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, headers=GEMINI_HEADERS, timeout=30)
         if res.status_code == 200:
@@ -929,7 +929,7 @@ If no English vocabulary words are found in the image, return an empty response.
             mime = "image/jpeg"
         parts.append({"inline_data": {"mime_type": mime, "data": encoded_image}})
 
-    payload = {"contents": [{"parts": parts}]}
+    payload = {"contents": [{"parts": parts}], "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}}
     try:
         res = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", json=payload, headers=GEMINI_HEADERS, timeout=60)
         if res.status_code == 200:
