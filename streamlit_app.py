@@ -39,6 +39,7 @@ GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 GEMINI_HEADERS = {"Referer": "https://flashcard-techeasy.streamlit.app/"}
+GEMINI_PROXY_URL = st.secrets.get("GEMINI_PROXY_URL", "")
 
 # 預設單字內容 (Fallback)
 INITIAL_VOCAB = [
@@ -2466,8 +2467,7 @@ else:
                 template=template,
                 options=options,
                 completion_count=st.session_state.drill_completion_count,
-                api_key=GEMINI_API_KEY,
-                api_url=GEMINI_API_URL,
+                proxy_url=GEMINI_PROXY_URL,
                 template_hash=template_hash,
                 dataset_id=st.session_state.current_dataset_id,
                 firestore_doc_path=fs_doc_path,

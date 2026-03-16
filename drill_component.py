@@ -19,7 +19,7 @@ def _get_firestore_token():
     return scoped.token, creds_info.get("project_id", "")
 
 
-def generate_drill_html(template, options, completion_count, api_key, api_url,
+def generate_drill_html(template, options, completion_count, proxy_url,
                         template_hash, dataset_id, firestore_doc_path,
                         completed_options=None, user_doc_path=None,
                         drill_remaining=-1,
@@ -39,8 +39,7 @@ def generate_drill_html(template, options, completion_count, api_key, api_url,
         "options": options,
         "completionCount": completion_count,
         "completedOptions": list(completed_options) if completed_options else [],
-        "apiKey": api_key,
-        "apiUrl": api_url,
+        "proxyUrl": proxy_url,
         "templateHash": template_hash,
         "datasetId": dataset_id,
         "silenceThreshold": 12,
@@ -439,8 +438,7 @@ body.dark .speed-btn.active {{ background:rgba(80,160,255,0.2); color:#7db8ff; b
         }});
     }}
 
-    // === AI 判讀（多模型降級 + 語音辨識 fallback） ===
-    const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
+    // === AI 判讀（透過 Cloud Function proxy，多模型降級 + 語音辨識 fallback） ===
     const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash'];
     let modelIdx = 0; // 目前使用的模型索引，429 時往下降級
 
@@ -477,11 +475,14 @@ Return JSON:
     }}
 
     async function callGeminiWithModel(model, base64, mimeType, prompt) {{
-        const url = API_BASE + model + ':generateContent?key=' + CFG.apiKey;
-        const res = await fetch(url, {{
+        const res = await fetch(CFG.proxyUrl, {{
             method: 'POST',
-            headers: {{ 'Content-Type': 'application/json', 'Referer': 'https://flashcard-techeasy.streamlit.app/' }},
+            headers: {{
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + CFG.firestoreToken,
+            }},
             body: JSON.stringify({{
+                model: model,
                 contents: [{{ parts: [
                     {{ text: prompt }},
                     {{ inline_data: {{ mime_type: mimeType, data: base64 }} }}
