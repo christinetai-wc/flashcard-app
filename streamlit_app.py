@@ -184,7 +184,8 @@ def consume_vocab_ai_usage():
 def get_drill_remaining():
     """取得免費用戶今日句型口說 AI 判讀剩餘次數。Premium 回傳 -1（無限）"""
     # 先從 session state 檢查
-    if is_premium(st.session_state.get("user_info")):
+    ui = st.session_state.get("user_info")
+    if is_premium(ui):
         return -1
     # session state 可能不準，從 Firestore 再確認一次
     today_str = str(date.today())
@@ -200,8 +201,11 @@ def get_drill_remaining():
             usage = user_data.get("ai_usage", {})
             used = usage.get("drill_count", {}).get(today_str, 0)
             return max(0, FREE_DAILY_DRILL_LIMIT - int(used))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[ERROR] get_drill_remaining exception: {e}")
+    # Premium 安全網：如果 session state 有 plan=premium，信任它
+    if ui and ui.get("plan") == "premium":
+        return -1
     return FREE_DAILY_DRILL_LIMIT
 
 # --- 語音辨識次數紀錄（不限制，但寫入 Firestore 供統計）---
@@ -2450,6 +2454,7 @@ else:
             fs_doc_path = f"artifacts/{APP_ID}/users/{user_id}/sentence_progress/{template_hash}"
             user_doc_path = f"{USER_LIST_PATH}/{user_name}"
             drill_remaining = get_drill_remaining()
+            print(f"[DEBUG] {user_name} drill_remaining={drill_remaining} is_premium={is_premium(st.session_state.user_info)}")
             # 取得題庫全部句數（排行榜統計用）
             all_sentences_for_stats = fetch_sentences_by_id(st.session_state.current_dataset_id)
             # 直接從 Firestore 讀取語速設定（JS 端會即時寫入，不能靠快取的 user_info）
