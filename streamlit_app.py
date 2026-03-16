@@ -1294,7 +1294,7 @@ with st.sidebar:
         if remembered_user and remembered_user in user_names:
             default_idx = user_names.index(remembered_user) + 1
         # admin Cookie 自動登入
-        if remembered_user and remembered_user in users_db and remembered_user not in user_names and remembered_pwd:
+        if remembered_user and remembered_user in users_db and remembered_user not in user_names and remembered_pwd and isinstance(remembered_pwd, str):
             if hash_password(remembered_pwd) == users_db[remembered_user].get("password"):
                 st.session_state.logged_in = True
                 st.session_state.current_user_name = remembered_user
