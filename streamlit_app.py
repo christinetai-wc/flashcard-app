@@ -183,8 +183,10 @@ def consume_vocab_ai_usage():
 
 def get_drill_remaining():
     """取得免費用戶今日句型口說 AI 判讀剩餘次數。Premium 回傳 -1（無限）"""
+    # 先從 session state 檢查
     if is_premium(st.session_state.get("user_info")):
         return -1
+    # session state 可能不準，從 Firestore 再確認一次
     today_str = str(date.today())
     try:
         user_name = st.session_state.get("current_user_name")
@@ -192,7 +194,10 @@ def get_drill_remaining():
             return FREE_DAILY_DRILL_LIMIT
         doc = db.collection(USER_LIST_PATH).document(user_name).get()
         if doc.exists:
-            usage = doc.to_dict().get("ai_usage", {})
+            user_data = doc.to_dict()
+            if is_premium(user_data):
+                return -1
+            usage = user_data.get("ai_usage", {})
             used = usage.get("drill_count", {}).get(today_str, 0)
             return max(0, FREE_DAILY_DRILL_LIMIT - int(used))
     except Exception:
