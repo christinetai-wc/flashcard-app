@@ -1199,6 +1199,50 @@ def navigate_to_sentence(book, cat):
     # 強制更新句型頁面的選單狀態
     st.session_state["sentence_filter"] = preset
 
+def _generate_encouragement(user_info):
+    """根據練習數據產生鼓勵語（不呼叫 AI，零延遲）"""
+    import random
+    msgs = []
+    today_str = str(date.today())
+    yesterday_str = str(date.today() - timedelta(days=1))
+
+    # 1. 連續練習天數
+    practice_time = user_info.get('practice_time', {})
+    if practice_time:
+        streak = 0
+        d = date.today() - timedelta(days=1)  # 從昨天開始算（今天還在進行中）
+        while str(d) in practice_time and practice_time[str(d)] > 0:
+            streak += 1
+            d -= timedelta(days=1)
+        # 今天有練也算
+        if practice_time.get(today_str, 0) > 0:
+            streak += 1
+        if streak >= 7:
+            msgs.append(f"🔥 連續第 {streak} 天練習，超強！")
+        elif streak >= 3:
+            msgs.append(f"🔥 連續第 {streak} 天練習，保持下去！")
+
+    # 2. 昨天練習時間
+    yesterday_secs = practice_time.get(yesterday_str, 0)
+    if yesterday_secs >= 600:  # 10 分鐘以上才提
+        msgs.append(f"💪 昨天練了 {yesterday_secs // 60} 分鐘，今天繼續挑戰！")
+
+    # 3. 句型口說進度鼓勵
+    sentence_stats = user_info.get('sentence_stats', {})
+    total_completed = sum(s.get('completed', 0) for s in sentence_stats.values() if isinstance(s, dict))
+    if total_completed > 0:
+        greetings = [
+            f"📖 已完成 {total_completed} 個句型，繼續累積！",
+            f"🎯 {total_completed} 個句型已征服，挑戰下一個吧！",
+        ]
+        msgs.append(random.choice(greetings))
+
+    # 4. 新用戶歡迎
+    if not practice_time and total_completed == 0:
+        msgs.append("👋 歡迎！從第一句開始練習吧")
+
+    return msgs[0] if msgs else None
+
 def attempt_login():
     """處理登入的 Callback 函式"""
     input_name = (st.session_state.login_user_name or "").strip()
@@ -1307,13 +1351,14 @@ with st.sidebar:
         # SRS 今日複習提示
         if st.session_state.get('u_vocab'):
             due_today = get_due_words(st.session_state.u_vocab)
+            _enc = _generate_encouragement(user)
             if due_today:
-                st.warning(f"📅 今日待複習：{len(due_today)} 個單字")
-            else:
-                st.caption("✅ 今日無待複習單字")
-        # 今日練習時長
-        mins = int(st.session_state.get('practice_seconds_today', 0)) // 60
-        st.caption(f"⏱️ 今日練習：{mins} 分鐘")
+                tip = f"📅 今日待複習：{len(due_today)} 個單字"
+                if _enc:
+                    tip += f"  \n{_enc}"
+                st.warning(tip)
+            elif _enc:
+                st.warning(_enc)
         st.divider()
         # 綁定選單狀態至 nav_selection
         menu_options = ["學習儀表板", "單字管理", "單字練習", "句型口說"]
