@@ -612,6 +612,14 @@ Return JSON:
         }} catch(e) {{ console.error('Firestore read error:', e); return null; }}
     }}
 
+    async function fsReadCompletionCount() {{
+        try {{
+            const fields = await fsRead();
+            if (fields?.completion_count?.integerValue) return parseInt(fields.completion_count.integerValue);
+            return 0;
+        }} catch(e) {{ return 0; }}
+    }}
+
     function toFsValue(val) {{
         if (typeof val === 'string') return {{ stringValue: val }};
         if (typeof val === 'number') return Number.isInteger(val) ? {{ integerValue: String(val) }} : {{ doubleValue: val }};
@@ -727,9 +735,9 @@ Return JSON:
                 const ds = statsMap?.[CFG.datasetId]?.mapValue?.fields;
                 if (ds?.completed) currentCompleted = parseInt(ds.completed.integerValue || '0');
             }}
-            // 只有這句是第一次完成（之前 completionCount=0）才 +1
-            const isFirstComplete = CFG.completionCount === 0;
-            const newCompleted = isFirstComplete
+            // 用 saveRoundToFirestore 回傳的新 count 判斷：只有從 0→1 才是新句型
+            const newCount = await fsReadCompletionCount();
+            const newCompleted = (newCount === 1)
                 ? Math.min(currentCompleted + 1, CFG.totalSentences)
                 : currentCompleted;
             const now = new Date().toISOString();
