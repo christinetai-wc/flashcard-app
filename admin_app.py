@@ -4,8 +4,10 @@ import json
 import hashlib
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from google.cloud import firestore
+
+TW_TZ = timezone(timedelta(hours=8))
 from google.oauth2 import service_account
 
 
@@ -40,6 +42,50 @@ def _get_sentences_content(_db, data_base_path, book_id):
             item['Options_Str'] = ""
         data.append(item)
     return sorted(data, key=lambda x: x.get('Order', 9999))
+
+
+def _fix_practice_time(db, app_id, user_name, student_id, user_info):
+    """從 drill logs 計算練習時間，補正 Firebase 中的 practice_time"""
+    log_path = f"artifacts/{app_id}/users/{student_id}/drill_logs"
+    logs = list(db.collection(log_path).stream())
+    if not logs:
+        return
+
+    log_secs = {}
+    for log in logs:
+        data = log.to_dict()
+        started = data.get('started_at', '')
+        events = data.get('events', [])
+        if not events or not started:
+            continue
+        last_t = events[-1].get('t', '')
+        if not last_t:
+            continue
+        try:
+            t0 = datetime.fromisoformat(started.replace('Z', '+00:00'))
+            t1 = datetime.fromisoformat(last_t.replace('Z', '+00:00'))
+            dur = (t1 - t0).total_seconds()
+            tw_date = t0.astimezone(TW_TZ).strftime('%Y-%m-%d')
+            log_secs[tw_date] = log_secs.get(tw_date, 0) + int(dur)
+        except:
+            pass
+
+    if not log_secs:
+        return
+
+    existing = user_info.get('practice_time', {})
+    updates = {}
+    for d, secs in log_secs.items():
+        if secs > existing.get(d, 0):
+            updates[d] = secs
+
+    if updates:
+        users_path = f"artifacts/{app_id}/public/data/users"
+        db.collection(users_path).document(user_name).set({'practice_time': updates}, merge=True)
+        # 更新本地 user_info 讓畫面即時反映
+        if 'practice_time' not in user_info:
+            user_info['practice_time'] = {}
+        user_info['practice_time'].update(updates)
 
 
 def render_admin(db, app_id):
@@ -716,6 +762,9 @@ def render_admin(db, app_id):
             selected_user = st.selectbox("選擇學生", user_names, key="log_user_select")
             user_info = all_users.get(selected_user, {})
             student_id = user_info.get("id", selected_user)
+
+            # 自動從 drill logs 補正 practice_time
+            _fix_practice_time(db, app_id, selected_user, student_id, user_info)
 
             st.subheader(f"📋 {selected_user} 概覽")
             plan = user_info.get("plan", "free")

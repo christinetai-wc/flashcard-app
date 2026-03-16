@@ -1288,11 +1288,23 @@ with st.sidebar:
         remembered_user = cookie_controller.get("remembered_user")
         remembered_pwd = cookie_controller.get("remembered_pwd")
 
-        # 名稱選單：可從列表選，也可打字搜尋
+        # 名稱選單：學生可選可搜尋，admin 不顯示但 Cookie 記住時仍可登入
         user_names = sorted(k for k, v in users_db.items() if v.get('role') != 'admin')
         default_idx = 0
         if remembered_user and remembered_user in user_names:
-            default_idx = user_names.index(remembered_user) + 1  # +1 因為有空白選項
+            default_idx = user_names.index(remembered_user) + 1
+        # admin Cookie 自動登入
+        if remembered_user and remembered_user in users_db and remembered_user not in user_names and remembered_pwd:
+            if hash_password(remembered_pwd) == users_db[remembered_user].get("password"):
+                st.session_state.logged_in = True
+                st.session_state.current_user_name = remembered_user
+                st.session_state.user_info = users_db[remembered_user]
+                sync_vocab_from_db(init_if_empty=False)
+                existing_time = users_db[remembered_user].get('practice_time', {}).get(str(date.today()), 0)
+                st.session_state.practice_seconds_today = existing_time
+                st.session_state.practice_seconds_last_saved = existing_time
+                st.session_state.practice_last_active = None
+                st.rerun()
         st.selectbox(
             "選擇或搜尋名稱",
             options=[""] + user_names,
