@@ -1288,8 +1288,9 @@ with st.sidebar:
         remembered_user = cookie_controller.get("remembered_user")
         remembered_pwd = cookie_controller.get("remembered_pwd")
 
-        # 名稱選單：學生可選可搜尋，admin 不顯示但 Cookie 記住時仍可登入
-        user_names = sorted(k for k, v in users_db.items() if v.get('role') != 'admin')
+        # 名稱選單：學生可選可搜尋，admin 預設隱藏（網址加 ?admin=1 可顯示）
+        show_admin = st.query_params.get("admin") == "1"
+        user_names = sorted(k for k, v in users_db.items() if show_admin or v.get('role') != 'admin')
         default_idx = 0
         if remembered_user and remembered_user in user_names:
             default_idx = user_names.index(remembered_user) + 1
