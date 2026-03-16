@@ -480,7 +480,7 @@ Return JSON:
         const url = API_BASE + model + ':generateContent?key=' + CFG.apiKey;
         const res = await fetch(url, {{
             method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
+            headers: {{ 'Content-Type': 'application/json', 'Referer': 'https://flashcard-techeasy.streamlit.app/' }},
             body: JSON.stringify({{
                 contents: [{{ parts: [
                     {{ text: prompt }},
@@ -489,7 +489,7 @@ Return JSON:
                 generationConfig: {{ responseMimeType: 'application/json' }}
             }})
         }});
-        if (res.status === 429 || res.status === 404) return 'quota';
+        if (res.status === 429 || res.status === 404 || res.status === 403) return 'quota';
         if (!res.ok) return null;
         const data = await res.json();
         const tokenCount = data.usageMetadata?.totalTokenCount || 0;
