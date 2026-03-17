@@ -1381,6 +1381,9 @@ with st.sidebar:
 
     else:
         user = st.session_state.user_info
+        if not user:
+            st.session_state.logged_in = False
+            st.rerun()
         st.markdown(f"### 👤 {user['name']}")
         st.caption(f"學號: {user['id']}")
         # 顯示訂閱狀態與 AI 額度
