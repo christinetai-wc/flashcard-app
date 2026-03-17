@@ -144,6 +144,21 @@ def hash_string(text):
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+def log_error(context, error, critical=False):
+    """記錄錯誤。一般錯誤 print 到 Streamlit Logs，重要錯誤額外寫入 Firestore"""
+    msg = f"[ERROR] {context}: {error}"
+    print(msg)
+    if critical and db:
+        try:
+            db.collection(f"artifacts/{APP_ID}/error_logs").add({
+                "context": context,
+                "error": str(error),
+                "user": st.session_state.get("current_user_name", "unknown"),
+                "timestamp": firestore.SERVER_TIMESTAMP,
+            })
+        except:
+            pass  # 寫 error log 本身失敗就只能放棄
+
 def is_premium(user_info):
     """檢查使用者是否為有效的 Premium 用戶"""
     if not user_info:
@@ -880,7 +895,8 @@ Requirements:
                             "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
                         })
             return raw_items
-    except: pass
+    except Exception as e:
+        log_error("call_gemini_to_complete", e, critical=True)
     return []
 
 def call_gemini_ocr(image_files, course_name, course_date):
@@ -957,7 +973,8 @@ If no English vocabulary words are found in the image, return an empty response.
                             "srs_interval": 0, "srs_ease": 2.5, "srs_due": "", "srs_streak": 0, "srs_last_review": ""
                         })
             return raw_items
-    except: pass
+    except Exception as e:
+        log_error("call_gemini_ocr", e, critical=True)
     return []
 
 def get_combined_dashboard_options(vocab, catalogs):
@@ -1103,7 +1120,8 @@ def save_practice_time():
         user_ref = db.collection(USER_LIST_PATH).document(st.session_state.current_user_name)
         user_ref.set({"practice_time": {today_str: firestore.Increment(delta)}}, merge=True)
         st.session_state.practice_seconds_last_saved = total
-    except: pass
+    except Exception as e:
+        log_error("save_practice_time", e)
 # ── 練習時長追蹤結束 ─────────────────────────────────────────────
 
 def get_sentence_category_options(sentences, catalog_name):
@@ -1311,7 +1329,8 @@ with st.sidebar:
         try:
             if cookie_controller.get("remembered_pwd"):
                 cookie_controller.remove("remembered_pwd")
-        except: pass
+        except Exception as e:
+            print(f"[WARN] cookie cleanup: {e}")
 
         if remembered_user and remembered_user in users_db and remembered_token and isinstance(remembered_token, str):
             # 從 Firestore 驗證 session token
@@ -1327,8 +1346,8 @@ with st.sidebar:
                     st.session_state.practice_seconds_last_saved = existing_time
                     st.session_state.practice_last_active = None
                     st.rerun()
-            except:
-                pass
+            except Exception as e:
+                log_error("auto_login", e)
 
         # 名稱選單：學生可選可搜尋，admin 預設隱藏（網址加 ?admin=1 可顯示）
         show_admin = st.query_params.get("admin") == "1"
@@ -1430,7 +1449,8 @@ with st.sidebar:
             cookie_controller.remove("session_token")
             try:
                 db.collection(USER_LIST_PATH).document(st.session_state.current_user_name).update({"session_token": firestore.DELETE_FIELD})
-            except: pass
+            except Exception as e:
+                print(f"[WARN] logout session cleanup: {e}")
             st.session_state.logged_in = False
             st.session_state.user_info = None
             st.session_state.u_vocab = []
