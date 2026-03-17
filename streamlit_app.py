@@ -373,7 +373,7 @@ if "pending_ocr_items" not in st.session_state:
     st.session_state.pending_ocr_items = None
 # 導航狀態管理
 if "nav_selection" not in st.session_state:
-    st.session_state.nav_selection = "學習儀表板"
+    st.session_state.nav_selection = "首頁"
 
 # 句型練習專用 State
 if "sentence_idx" not in st.session_state:
@@ -1463,7 +1463,7 @@ with st.sidebar:
                 st.warning(_enc)
         st.divider()
         # 綁定選單狀態至 nav_selection
-        menu_options = ["學習儀表板", "單字管理", "單字練習", "句型口說"]
+        menu_options = ["首頁", "學習儀表板", "單字管理", "單字練習", "句型口說"]
         if user.get("role") == "admin":
             menu_options.append("⚙️ 後台管理")
         menu =st.radio("功能選單", menu_options, key="nav_selection")
@@ -1577,7 +1577,28 @@ if not st.session_state.logged_in:
 else:
     u_vocab = st.session_state.u_vocab
 
-    if menu == "學習儀表板":
+    if menu == "首頁":
+        # 顯示學生版報告
+        user_id = st.session_state.user_info.get("id", "")
+        report_path = f"artifacts/{APP_ID}/users/{user_id}/reports"
+        try:
+            report_docs = list(db.collection(report_path).order_by("created_at", direction=firestore.Query.DESCENDING).limit(1).stream())
+        except Exception:
+            report_docs = []
+
+        if report_docs:
+            report_data = report_docs[0].to_dict()
+            student_content = report_data.get("student_content")
+            if student_content:
+                st.markdown(student_content)
+            else:
+                st.title("✨ Flashcard Pro")
+                st.info("歡迎回來！從左側選單開始練習吧 💪")
+        else:
+            st.title("✨ Flashcard Pro")
+            st.info("歡迎回來！從左側選單開始練習吧 💪")
+
+    elif menu == "學習儀表板":
         st.title("📊 學習儀表板")
         
         # 調整 Tab 順序：個人戰績表、排行榜、單字學習、句型練習
