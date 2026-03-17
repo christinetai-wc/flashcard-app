@@ -4,7 +4,6 @@ import json
 import hashlib
 import os
 import time
-import requests
 from datetime import datetime, timedelta, timezone
 from google.cloud import firestore
 
@@ -87,99 +86,6 @@ def _fix_practice_time(db, app_id, user_name, student_id, user_info):
         if 'practice_time' not in user_info:
             user_info['practice_time'] = {}
         user_info['practice_time'].update(updates)
-
-
-def _generate_report(db, app_id, user_name, student_id, user_info):
-    """用已有的 db 收集資料，呼叫 Gemini 產生報告，回傳 Markdown 文字"""
-    api_key = st.secrets.get("GEMINI_API_KEY", "")
-    if not api_key:
-        return None
-
-    # 收集 drill logs
-    log_path = f"artifacts/{app_id}/users/{student_id}/drill_logs"
-    logs = list(db.collection(log_path).stream())
-    if not logs:
-        return None
-
-    summary_lines = [f'學生：{user_name}（{student_id}），方案：{user_info.get("plan", "free")}，語速：{user_info.get("tts_rate", 0.85)}']
-
-    for log in sorted(logs, key=lambda x: x.to_dict().get('started_at', '')):
-        data = log.to_dict()
-        events = data.get('events', [])
-        attempts = [e for e in events if e.get('type') == 'attempt']
-        if not attempts:
-            continue
-
-        started = data.get('started_at', '')
-        try:
-            dt = datetime.fromisoformat(started.replace('Z', '+00:00')).astimezone(TW_TZ)
-            started_tw = dt.strftime('%Y-%m-%d %H:%M')
-        except:
-            started_tw = started[:19]
-
-        template = data.get('template', '')
-        session_lines = [f'\n[{started_tw}] {template}']
-
-        for e in events:
-            if e.get('type') != 'attempt':
-                continue
-            try:
-                d = json.loads(e['detail'])
-                mark = '✅' if d.get('ok') else '❌'
-                session_lines.append(f'  {mark} {d.get("word","")}（第{d.get("try","")}次）：{d.get("transcript","")[:80]}')
-                if d.get('feedback'):
-                    session_lines.append(f'    💡 {d["feedback"][:120]}')
-            except:
-                pass
-
-        summary_lines.extend(session_lines)
-
-    practice_time = user_info.get('practice_time', {})
-    if practice_time:
-        summary_lines.append('\n練習時間：')
-        for date_key in sorted(practice_time.keys(), reverse=True)[:7]:
-            secs = practice_time[date_key]
-            summary_lines.append(f'  {date_key}：{secs // 60} 分 {secs % 60} 秒')
-
-    raw_data = '\n'.join(summary_lines)
-
-    prompt = f"""你是一位英語教學專家，正在分析一位台灣國中小學生的英語口說練習紀錄。
-請根據以下原始資料，產出一份給老師看的繁體中文分析報告。
-
-報告格式要求：
-1. **整體統計**：總嘗試次數、一次過關率、練習時長
-2. **苦戰單字排行**：列出花最多次才通過的單字（≥3次），說明卡關原因
-3. **發音弱點分析**：從 AI 回饋中歸納出 2-4 個系統性發音問題，附具體例子
-4. **明確強項**：哪些類型的句子/單字表現好
-5. **第 2 輪 vs 第 1 輪進步觀察**：有重複練習的句型，比較兩輪表現差異
-6. **建議重點練習**：用表格列出優先級、目標音、代表字、練習建議
-7. **總評**：2-3 句總結這位學生的學習態度和下一步方向
-
-注意：
-- 這是給老師的報告，語氣專業但親切
-- 用 Markdown 格式
-- 從 transcript 和 feedback 中找出真實的發音模式，不要泛泛而談
-
-以下是學生的練習原始資料：
-
-{raw_data}"""
-
-    url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
-    try:
-        res = requests.post(
-            f'{url}?key={api_key}',
-            json={'contents': [{'parts': [{'text': prompt}]}]},
-            headers={'Content-Type': 'application/json', 'Referer': 'https://flashcard-techeasy.streamlit.app/'},
-            timeout=300
-        )
-        if res.status_code != 200:
-            return None
-        result = res.json()
-        text = result['candidates'][0]['content']['parts'][0]['text']
-        tokens = result.get('usageMetadata', {}).get('totalTokenCount', '?')
-        return text + f'\n\n---\n*（Gemini tokens: {tokens}）*'
-    except:
-        return None
 
 
 def render_admin(db, app_id):
@@ -960,10 +866,9 @@ def render_admin(db, app_id):
                         else:
                             st.info("無事件紀錄")
 
-            # === 📊 AI 分析報告 ===
-            st.subheader("📊 AI 分析報告")
+            # === 📊 練習報告 ===
+            st.subheader("📊 練習報告")
 
-            # 顯示已存的報告
             report_path = f"artifacts/{app_id}/users/{student_id}/reports"
             try:
                 report_docs = list(db.collection(report_path).order_by("created_at", direction=firestore.Query.DESCENDING).limit(1).stream())
@@ -973,28 +878,26 @@ def render_admin(db, app_id):
             if report_docs:
                 report_data = report_docs[0].to_dict()
                 report_date = report_docs[0].id
-                st.caption(f"最新報告：{report_date}")
-                st.markdown(report_data.get("content", "（無內容）"))
+
+                tab_parent, tab_student = st.tabs(["👨‍👩‍👧 家長版", "🎒 學生版"])
+
+                with tab_parent:
+                    parent_content = report_data.get("content")
+                    if parent_content:
+                        st.caption(f"報告日期：{report_date}")
+                        st.markdown(parent_content)
+                    else:
+                        st.info("尚未產生家長版報告。")
+
+                with tab_student:
+                    student_content = report_data.get("student_content")
+                    if student_content:
+                        st.caption(f"報告日期：{report_date}")
+                        st.markdown(student_content)
+                    else:
+                        st.info("尚未產生學生版報告。")
             else:
                 st.info("尚未產生報告。")
-
-            # 產生新報告按鈕
-            if st.button("🤖 產生 AI 分析報告", use_container_width=True):
-                with st.spinner("正在用 Gemini 產生報告（約 30 秒）..."):
-                    try:
-                        report_text = _generate_report(db, app_id, selected_user, student_id, user_info)
-                        if report_text:
-                            today_str = datetime.now().strftime("%Y-%m-%d")
-                            db.collection(report_path).document(today_str).set({
-                                "content": report_text,
-                                "created_at": firestore.SERVER_TIMESTAMP,
-                            })
-                            st.success("報告已產生！")
-                            st.markdown(report_text)
-                        else:
-                            st.error("報告產生失敗。")
-                    except Exception as e:
-                        st.error(f"產生報告時發生錯誤：{e}")
 
 
 # === 獨立執行模式 ===
