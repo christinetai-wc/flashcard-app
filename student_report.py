@@ -260,6 +260,90 @@ def generate_ai_report(data, secrets):
     print(f'\n---\n（Gemini tokens: {tokens}）')
 
 
+def generate_ai_report_text(data, secrets):
+    """用 Gemini 產出分析報告，回傳 Markdown 文字（供網頁顯示）"""
+    api_key = secrets.get('GEMINI_API_KEY', '')
+    if not api_key:
+        return None
+
+    summary_lines = []
+    summary_lines.append(f'學生：{data["name"]}（{data["user_id"]}），方案：{data["plan"]}，語速：{data["tts_rate"]}')
+
+    for session in data['drill_sessions']:
+        started = utc_to_tw(session['started_at'])
+        template = session['template']
+        session_lines = [f'\n[{started}] {template}']
+
+        for e in session['events']:
+            if e.get('type') != 'attempt':
+                continue
+            try:
+                d = json.loads(e['detail'])
+                word = d.get('word', '')
+                ok = d.get('ok', False)
+                tries = d.get('try', 0)
+                transcript = d.get('transcript', '')[:80]
+                feedback = d.get('feedback', '')[:120]
+                mark = '✅' if ok else '❌'
+                session_lines.append(f'  {mark} {word}（第{tries}次）：{transcript}')
+                if feedback:
+                    session_lines.append(f'    💡 {feedback}')
+            except:
+                pass
+
+        summary_lines.extend(session_lines)
+
+    practice_time = data.get('practice_time', {})
+    if practice_time:
+        summary_lines.append('\n練習時間：')
+        for date_key in sorted(practice_time.keys(), reverse=True):
+            secs = practice_time[date_key]
+            summary_lines.append(f'  {date_key}：{secs // 60} 分 {secs % 60} 秒')
+
+    raw_data = '\n'.join(summary_lines)
+
+    prompt = f"""你是一位英語教學專家，正在分析一位台灣國中小學生的英語口說練習紀錄。
+請根據以下原始資料，產出一份給老師看的繁體中文分析報告。
+
+報告格式要求：
+1. **整體統計**：總嘗試次數、一次過關率、練習時長
+2. **苦戰單字排行**：列出花最多次才通過的單字（≥3次），說明卡關原因
+3. **發音弱點分析**：從 AI 回饋中歸納出 2-4 個系統性發音問題，附具體例子
+4. **明確強項**：哪些類型的句子/單字表現好
+5. **第 2 輪 vs 第 1 輪進步觀察**：有重複練習的句型，比較兩輪表現差異
+6. **建議重點練習**：用表格列出優先級、目標音、代表字、練習建議
+7. **總評**：2-3 句總結這位學生的學習態度和下一步方向
+
+注意：
+- 這是給老師的報告，語氣專業但親切
+- 用 Markdown 格式
+- 從 transcript 和 feedback 中找出真實的發音模式，不要泛泛而談
+
+以下是學生的練習原始資料：
+
+{raw_data}"""
+
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}'
+    headers = {
+        'Content-Type': 'application/json',
+        'Referer': 'https://flashcard-techeasy.streamlit.app/',
+    }
+    payload = {
+        'contents': [{'parts': [{'text': prompt}]}],
+    }
+
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=300)
+        if res.status_code != 200:
+            return None
+        result = res.json()
+        text = result['candidates'][0]['content']['parts'][0]['text']
+        tokens = result.get('usageMetadata', {}).get('totalTokenCount', '?')
+        return text + f'\n\n---\n*（Gemini tokens: {tokens}）*'
+    except:
+        return None
+
+
 def get_student_report(student_name, use_ai=False):
     data, secrets = collect_student_data(student_name)
     if not data:

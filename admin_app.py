@@ -866,6 +866,45 @@ def render_admin(db, app_id):
                         else:
                             st.info("無事件紀錄")
 
+            # === 📊 AI 分析報告 ===
+            st.subheader("📊 AI 分析報告")
+
+            # 顯示已存的報告
+            report_path = f"artifacts/{app_id}/users/{student_id}/reports"
+            report_docs = list(db.collection(report_path).order_by("created_at", direction=firestore.Query.DESCENDING).limit(1).stream())
+
+            if report_docs:
+                report_data = report_docs[0].to_dict()
+                report_date = report_docs[0].id
+                st.caption(f"最新報告：{report_date}")
+                st.markdown(report_data.get("content", "（無內容）"))
+            else:
+                st.info("尚未產生報告。")
+
+            # 產生新報告按鈕
+            if st.button("🤖 產生 AI 分析報告", use_container_width=True):
+                with st.spinner("正在用 Gemini 產生報告（約 30 秒）..."):
+                    try:
+                        from student_report import collect_student_data, generate_ai_report_text
+                        data, secrets = collect_student_data(selected_user)
+                        if data:
+                            report_text = generate_ai_report_text(data, secrets)
+                            if report_text:
+                                # 存到 Firestore
+                                today_str = datetime.now().strftime("%Y-%m-%d")
+                                db.collection(report_path).document(today_str).set({
+                                    "content": report_text,
+                                    "created_at": firestore.SERVER_TIMESTAMP,
+                                })
+                                st.success("報告已產生！")
+                                st.markdown(report_text)
+                            else:
+                                st.error("報告產生失敗。")
+                        else:
+                            st.error(f"找不到學生「{selected_user}」的資料。")
+                    except Exception as e:
+                        st.error(f"產生報告時發生錯誤：{e}")
+
 
 # === 獨立執行模式 ===
 if __name__ == "__main__":
