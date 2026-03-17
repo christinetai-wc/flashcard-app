@@ -732,35 +732,24 @@ Return JSON:
     // 更新排行榜統計（sentence_stats）
     async function updateSentenceStats() {{
         if (!CFG.firestoreUserDocPath || !CFG.datasetId || !CFG.totalSentences) return;
-        const userUrl = `https://firestore.googleapis.com/v1/projects/${{CFG.firestoreProject}}/databases/(default)/documents/${{CFG.firestoreUserDocPath}}`;
+        const projectId = CFG.firestoreProject;
+        const docPath = CFG.firestoreUserDocPath;
+        const userUrl = `https://firestore.googleapis.com/v1/projects/${{projectId}}/databases/(default)/documents/${{docPath}}`;
+        const commitUrl = `https://firestore.googleapis.com/v1/projects/${{projectId}}/databases/(default)/documents:commit`;
+        const now = new Date().toISOString();
+
         try {{
-            const res = await fetch(userUrl, {{
-                headers: {{ 'Authorization': 'Bearer ' + CFG.firestoreToken }}
-            }});
-            let currentCompleted = 0;
-            if (res.ok) {{
-                const doc = await res.json();
-                const statsMap = doc.fields?.sentence_stats?.mapValue?.fields;
-                const ds = statsMap?.[CFG.datasetId]?.mapValue?.fields;
-                if (ds?.completed) currentCompleted = parseInt(ds.completed.integerValue || '0');
-            }}
-            // 用 saveRoundToFirestore 回傳的新 count 判斷：只有從 0→1 才是新句型
-            const newCount = await fsReadCompletionCount();
-            const newCompleted = (newCount === 1)
-                ? Math.min(currentCompleted + 1, CFG.totalSentences)
-                : currentCompleted;
-            const now = new Date().toISOString();
+            // 先更新 name, total, last_active（這些可以覆蓋）
             const fields = {{
                 sentence_stats: {{ mapValue: {{ fields: {{
                     [CFG.datasetId]: {{ mapValue: {{ fields: {{
                         name: {{ stringValue: CFG.datasetName || CFG.datasetId }},
                         total: {{ integerValue: String(CFG.totalSentences) }},
-                        completed: {{ integerValue: String(newCompleted) }},
                         last_active: {{ stringValue: now }}
                     }} }} }}
                 }} }} }}
             }};
-            await fetch(userUrl + '?updateMask.fieldPaths=sentence_stats.' + CFG.datasetId, {{
+            await fetch(userUrl + '?updateMask.fieldPaths=sentence_stats.' + CFG.datasetId + '.name&updateMask.fieldPaths=sentence_stats.' + CFG.datasetId + '.total&updateMask.fieldPaths=sentence_stats.' + CFG.datasetId + '.last_active', {{
                 method: 'PATCH',
                 headers: {{
                     'Authorization': 'Bearer ' + CFG.firestoreToken,
@@ -768,6 +757,29 @@ Return JSON:
                 }},
                 body: JSON.stringify({{ fields }})
             }});
+
+            // completed 用原子遞增（只有新句型 completion_count === 1 時才 +1）
+            const newCount = await fsReadCompletionCount();
+            if (newCount === 1) {{
+                await fetch(commitUrl, {{
+                    method: 'POST',
+                    headers: {{
+                        'Authorization': 'Bearer ' + CFG.firestoreToken,
+                        'Content-Type': 'application/json',
+                    }},
+                    body: JSON.stringify({{
+                        writes: [{{
+                            transform: {{
+                                document: `projects/${{projectId}}/databases/(default)/documents/${{docPath}}`,
+                                fieldTransforms: [{{
+                                    fieldPath: `sentence_stats.${{CFG.datasetId}}.completed`,
+                                    increment: {{ integerValue: '1' }}
+                                }}]
+                            }}
+                        }}]
+                    }})
+                }});
+            }}
         }} catch(e) {{ console.warn('Stats update error:', e); }}
     }}
 
@@ -781,34 +793,70 @@ Return JSON:
         }});
     }}
 
-    // 全部完成後：completion_count +1，completed_options 重置，寫入 round 紀錄
+    // 全部完成後：completion_count +1（原子操作），completed_options 重置，round 寫入子文件
     async function saveRoundToFirestore() {{
-        const existing = await fsRead();
-        const currentCount = existing?.completion_count?.integerValue
-            ? parseInt(existing.completion_count.integerValue) : (CFG.completionCount || 0);
-        const newCount = currentCount + 1;
+        const projectId = CFG.firestoreProject;
+        const docPath = CFG.firestoreDocPath;
+        const commitUrl = `https://firestore.googleapis.com/v1/projects/${{projectId}}/databases/(default)/documents:commit`;
 
+        // 1. 原子遞增 completion_count + 重置 completed_options + 更新 template/dataset
+        try {{
+            await fetch(commitUrl, {{
+                method: 'POST',
+                headers: {{
+                    'Authorization': 'Bearer ' + CFG.firestoreToken,
+                    'Content-Type': 'application/json',
+                }},
+                body: JSON.stringify({{
+                    writes: [
+                        // 寫入固定欄位
+                        {{
+                            update: {{
+                                name: `projects/${{projectId}}/databases/(default)/documents/${{docPath}}`,
+                                fields: {{
+                                    template_text: {{ stringValue: CFG.template }},
+                                    dataset_id: {{ stringValue: CFG.datasetId }},
+                                    completed_options: {{ arrayValue: {{ values: [] }} }},
+                                }}
+                            }},
+                            updateMask: {{ fieldPaths: ['template_text', 'dataset_id', 'completed_options'] }}
+                        }},
+                        // 原子遞增 completion_count
+                        {{
+                            transform: {{
+                                document: `projects/${{projectId}}/databases/(default)/documents/${{docPath}}`,
+                                fieldTransforms: [{{
+                                    fieldPath: 'completion_count',
+                                    increment: {{ integerValue: '1' }}
+                                }}]
+                            }}
+                        }}
+                    ]
+                }})
+            }});
+        }} catch(e) {{ console.error('Save round error:', e); }}
+
+        // 2. 讀取遞增後的 completion_count
+        const newCount = await fsReadCompletionCount();
+
+        // 3. Round 詳細資料寫入獨立子文件（不會覆蓋）
+        const roundDocPath = `${{docPath}}/rounds/round_${{newCount}}`;
+        const roundUrl = `https://firestore.googleapis.com/v1/projects/${{projectId}}/databases/(default)/documents/${{roundDocPath}}`;
         const roundData = {{
-            round: newCount,
-            timestamp: new Date().toISOString(),
-            results: S.results,
+            round: {{ integerValue: String(newCount) }},
+            timestamp: {{ stringValue: new Date().toISOString() }},
+            results: toFsValue(S.results),
         }};
-
-        const existingRounds = [];
-        if (existing?.rounds?.arrayValue?.values) {{
-            for (const v of existing.rounds.arrayValue.values) {{
-                existingRounds.push(parseFsValue(v));
-            }}
-        }}
-        existingRounds.push(roundData);
-
-        await fsWrite({{
-            template_text: CFG.template,
-            completed_options: [],  // 重置，準備下一輪
-            completion_count: newCount,
-            dataset_id: CFG.datasetId,
-            rounds: existingRounds,
-        }});
+        try {{
+            await fetch(roundUrl, {{
+                method: 'PATCH',
+                headers: {{
+                    'Authorization': 'Bearer ' + CFG.firestoreToken,
+                    'Content-Type': 'application/json',
+                }},
+                body: JSON.stringify({{ fields: roundData }})
+            }});
+        }} catch(e) {{ console.error('Save round detail error:', e); }}
 
         return newCount;
     }}
