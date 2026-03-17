@@ -1805,7 +1805,7 @@ else:
             c_title, c_refresh = st.columns([8, 2])
             c_title.subheader("🏆 全班句型練習排行榜")
             if c_refresh.button("🔄 刷新數據"):
-                st.cache_data.clear()
+                fetch_users_list.clear()
                 st.rerun()
 
             # 讀取排行榜數據，按句型書分組
