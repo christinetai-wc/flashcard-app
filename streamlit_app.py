@@ -177,25 +177,37 @@ def is_premium(user_info):
             return False
     return False
 
-# --- 單字補全額度（免費用戶每日 3 次）---
+# --- 單字補全額度（免費用戶每日 3 次，存 Firestore）---
 
 def check_vocab_ai_usage():
     """檢查免費用戶的單字補全每日額度，回傳 (可使用, 剩餘次數)"""
     if is_premium(st.session_state.get("user_info")):
         return True, -1
     today_str = str(date.today())
-    if st.session_state.get("vocab_ai_date") != today_str:
-        st.session_state.vocab_ai_date = today_str
-        st.session_state.vocab_ai_count = 0
-    used = st.session_state.get("vocab_ai_count", 0)
-    remaining = FREE_DAILY_VOCAB_AI_LIMIT - used
-    return remaining > 0, remaining
+    try:
+        user_name = st.session_state.get("current_user_name")
+        if user_name and db:
+            doc = db.collection(USER_LIST_PATH).document(user_name).get()
+            if doc.exists:
+                used = doc.to_dict().get("ai_usage", {}).get("vocab_count", {}).get(today_str, 0)
+                remaining = FREE_DAILY_VOCAB_AI_LIMIT - int(used)
+                return remaining > 0, remaining
+    except Exception as e:
+        log_error("check_vocab_ai_usage", e)
+    return True, FREE_DAILY_VOCAB_AI_LIMIT
 
 def consume_vocab_ai_usage():
-    """消耗一次單字補全額度（免費用戶）"""
+    """消耗一次單字補全額度，寫入 Firestore（免費用戶）"""
     if is_premium(st.session_state.get("user_info")):
         return
-    st.session_state.vocab_ai_count = st.session_state.get("vocab_ai_count", 0) + 1
+    today_str = str(date.today())
+    try:
+        user_name = st.session_state.get("current_user_name")
+        if user_name and db:
+            user_ref = db.collection(USER_LIST_PATH).document(user_name)
+            user_ref.set({"ai_usage": {"vocab_count": {today_str: firestore.Increment(1)}}}, merge=True)
+    except Exception as e:
+        log_error("consume_vocab_ai_usage", e)
 
 def get_drill_remaining(user_data=None):
     """取得免費用戶今日句型口說 AI 判讀剩餘次數。Premium 回傳 -1（無限）
