@@ -182,30 +182,36 @@ def consume_vocab_ai_usage():
         return
     st.session_state.vocab_ai_count = st.session_state.get("vocab_ai_count", 0) + 1
 
-def get_drill_remaining():
-    """取得免費用戶今日句型口說 AI 判讀剩餘次數。Premium 回傳 -1（無限）"""
-    # 先從 session state 檢查
-    ui = st.session_state.get("user_info")
+def get_drill_remaining(user_data=None):
+    """取得免費用戶今日句型口說 AI 判讀剩餘次數。Premium 回傳 -1（無限）
+    可傳入已讀取的 user_data 避免重複讀取 Firestore"""
+    # 先從傳入的 user_data 或 session state 檢查
+    ui = user_data or st.session_state.get("user_info")
     if is_premium(ui):
         return -1
-    # session state 可能不準，從 Firestore 再確認一次
-    today_str = str(date.today())
-    try:
-        user_name = st.session_state.get("current_user_name")
-        if not user_name or not db:
-            return FREE_DAILY_DRILL_LIMIT
-        doc = db.collection(USER_LIST_PATH).document(user_name).get()
-        if doc.exists:
-            user_data = doc.to_dict()
-            if is_premium(user_data):
-                return -1
-            usage = user_data.get("ai_usage", {})
-            used = usage.get("drill_count", {}).get(today_str, 0)
-            return max(0, FREE_DAILY_DRILL_LIMIT - int(used))
-    except Exception as e:
-        print(f"[ERROR] get_drill_remaining exception: {e}")
-    # Premium 安全網：如果 session state 有 plan=premium，信任它
-    if ui and ui.get("plan") == "premium":
+    # 如果沒有傳入 user_data，從 Firestore 再確認一次
+    if not user_data:
+        today_str = str(date.today())
+        try:
+            user_name = st.session_state.get("current_user_name")
+            if not user_name or not db:
+                return FREE_DAILY_DRILL_LIMIT
+            doc = db.collection(USER_LIST_PATH).document(user_name).get()
+            if doc.exists:
+                ui = doc.to_dict()
+                if is_premium(ui):
+                    return -1
+        except Exception as e:
+            print(f"[ERROR] get_drill_remaining exception: {e}")
+    # 計算剩餘次數
+    if ui:
+        today_str = str(date.today())
+        usage = ui.get("ai_usage", {})
+        used = usage.get("drill_count", {}).get(today_str, 0)
+        return max(0, FREE_DAILY_DRILL_LIMIT - int(used))
+    # Premium 安全網
+    session_ui = st.session_state.get("user_info")
+    if session_ui and session_ui.get("plan") == "premium":
         return -1
     return FREE_DAILY_DRILL_LIMIT
 
@@ -2476,12 +2482,13 @@ else:
             user_name = st.session_state.current_user_name
             fs_doc_path = f"artifacts/{APP_ID}/users/{user_id}/sentence_progress/{template_hash}"
             user_doc_path = f"{USER_LIST_PATH}/{user_name}"
-            drill_remaining = get_drill_remaining()
+            # 讀取一次 user 文件，供 drill_remaining 和 tts_rate 共用
+            _user_doc = db.collection(USER_LIST_PATH).document(user_name).get()
+            _user_data = _user_doc.to_dict() if _user_doc.exists else {}
+            drill_remaining = get_drill_remaining(user_data=_user_data)
+            saved_tts_rate = _user_data.get("tts_rate", 0.85)
             # 取得題庫全部句數（排行榜統計用）
             all_sentences_for_stats = fetch_sentences_by_id(st.session_state.current_dataset_id)
-            # 直接從 Firestore 讀取語速設定（JS 端會即時寫入，不能靠快取的 user_info）
-            _user_doc = db.collection(USER_LIST_PATH).document(user_name).get()
-            saved_tts_rate = _user_doc.to_dict().get("tts_rate", 0.85) if _user_doc.exists else 0.85
             drill_html = generate_drill_html(
                 template=template,
                 options=options,
