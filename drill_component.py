@@ -662,45 +662,40 @@ Return JSON:
         }} catch(e) {{ console.error('Firestore write error:', e); }}
     }}
 
-    // 記錄 AI token 使用量 + 判讀次數（合併一次讀寫，避免互相覆蓋）
+    // 記錄 AI token 使用量 + 判讀次數（使用 fieldTransforms.increment，原子操作）
     async function recordUsageToFirestore(tokenCount) {{
         if (!CFG.firestoreUserDocPath) return;
         const today = new Date().toISOString().slice(0, 10);
-        const userUrl = `https://firestore.googleapis.com/v1/projects/${{CFG.firestoreProject}}/databases/(default)/documents/${{CFG.firestoreUserDocPath}}`;
-        try {{
-            // 讀取現有 ai_usage
-            const res = await fetch(userUrl, {{
-                headers: {{ 'Authorization': 'Bearer ' + CFG.firestoreToken }}
+        const projectId = CFG.firestoreProject;
+        const docPath = CFG.firestoreUserDocPath;
+        const commitUrl = `https://firestore.googleapis.com/v1/projects/${{projectId}}/databases/(default)/documents:commit`;
+        const transforms = [
+            {{
+                fieldPath: `ai_usage.drill_count.${{today}}`,
+                increment: {{ integerValue: '1' }}
+            }}
+        ];
+        if (tokenCount > 0) {{
+            transforms.push({{
+                fieldPath: `ai_usage.speech.${{today}}`,
+                increment: {{ integerValue: String(tokenCount) }}
             }});
-            let speechVal = 0, drillVal = 0;
-            if (res.ok) {{
-                const doc = await res.json();
-                const usageFields = doc.fields?.ai_usage?.mapValue?.fields;
-                const speechMap = usageFields?.speech?.mapValue?.fields;
-                const drillMap = usageFields?.drill_count?.mapValue?.fields;
-                if (speechMap?.[today]) speechVal = parseInt(speechMap[today].integerValue || '0');
-                if (drillMap?.[today]) drillVal = parseInt(drillMap[today].integerValue || '0');
-            }}
-            // 組裝更新：speech token + drill_count
-            const usageFields = {{}};
-            if (tokenCount > 0) {{
-                usageFields.speech = {{ mapValue: {{ fields: {{
-                    [today]: {{ integerValue: String(speechVal + tokenCount) }}
-                }} }} }};
-            }}
-            usageFields.drill_count = {{ mapValue: {{ fields: {{
-                [today]: {{ integerValue: String(drillVal + 1) }}
-            }} }} }};
-            const fields = {{
-                ai_usage: {{ mapValue: {{ fields: usageFields }} }}
-            }};
-            await fetch(userUrl + '?updateMask.fieldPaths=ai_usage', {{
-                method: 'PATCH',
+        }}
+        try {{
+            await fetch(commitUrl, {{
+                method: 'POST',
                 headers: {{
                     'Authorization': 'Bearer ' + CFG.firestoreToken,
                     'Content-Type': 'application/json',
                 }},
-                body: JSON.stringify({{ fields }})
+                body: JSON.stringify({{
+                    writes: [{{
+                        transform: {{
+                            document: `projects/${{projectId}}/databases/(default)/documents/${{docPath}}`,
+                            fieldTransforms: transforms
+                        }}
+                    }}]
+                }})
             }});
         }} catch(e) {{ console.warn('Usage record error:', e); }}
     }}
