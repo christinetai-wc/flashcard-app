@@ -11,7 +11,7 @@ import google.auth.transport.requests
 
 
 def _generate_proxy_token():
-    """產生 HMAC token 供 Cloud Function 驗證（有效期 2 小時）"""
+    """產生 HMAC token 供 Cloud Function 驗證（有效期 1 小時，與 Firestore token 同步）"""
     secret = st.secrets.get("PROXY_SECRET", "")
     timestamp = str(int(time.time()))
     signature = hmac.new(secret.encode(), timestamp.encode(), hashlib.sha256).hexdigest()

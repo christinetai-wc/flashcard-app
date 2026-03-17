@@ -29,7 +29,7 @@ function validateToken(authHeader, secret) {
 
   // 檢查有效期（2 小時）
   const now = Math.floor(Date.now() / 1000);
-  if (Math.abs(now - ts) > 7200) return false;
+  if (Math.abs(now - ts) > 3600) return false;
 
   // 驗證 HMAC
   const expected = crypto.createHmac("sha256", secret).update(timestamp).digest("hex");
