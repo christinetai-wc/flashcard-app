@@ -871,7 +871,10 @@ def render_admin(db, app_id):
 
             # 顯示已存的報告
             report_path = f"artifacts/{app_id}/users/{student_id}/reports"
-            report_docs = list(db.collection(report_path).order_by("created_at", direction=firestore.Query.DESCENDING).limit(1).stream())
+            try:
+                report_docs = list(db.collection(report_path).order_by("created_at", direction=firestore.Query.DESCENDING).limit(1).stream())
+            except Exception:
+                report_docs = []
 
             if report_docs:
                 report_data = report_docs[0].to_dict()
