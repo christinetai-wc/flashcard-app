@@ -1354,18 +1354,19 @@ with st.sidebar:
             print(f"[WARN] cookie cleanup: {e}")
 
         if remembered_user and remembered_user in users_db and remembered_token and isinstance(remembered_token, str):
-            # 從 Firestore 驗證 session token
+            # 從 Firestore 驗證 session token（只設 state，不做耗時操作）
             try:
                 _user_doc = db.collection(USER_LIST_PATH).document(remembered_user).get()
                 if _user_doc.exists and _user_doc.to_dict().get("session_token") == remembered_token:
+                    user_data = _user_doc.to_dict()
                     st.session_state.logged_in = True
                     st.session_state.current_user_name = remembered_user
-                    st.session_state.user_info = _user_doc.to_dict()
-                    sync_vocab_from_db(init_if_empty=False)
-                    existing_time = _user_doc.to_dict().get('practice_time', {}).get(str(date.today()), 0)
+                    st.session_state.user_info = user_data
+                    existing_time = user_data.get('practice_time', {}).get(str(date.today()), 0)
                     st.session_state.practice_seconds_today = existing_time
                     st.session_state.practice_seconds_last_saved = existing_time
                     st.session_state.practice_last_active = None
+                    st.session_state._need_sync_vocab = True
                     st.rerun()
             except Exception as e:
                 log_error("auto_login", e)
@@ -1432,6 +1433,9 @@ with st.sidebar:
         if not user:
             st.session_state.logged_in = False
             st.rerun()
+        # 延遲同步單字庫（自動登入時不立即同步，等 rerun 後再做）
+        if st.session_state.pop("_need_sync_vocab", False):
+            sync_vocab_from_db(init_if_empty=False)
         st.markdown(f"### 👤 {user['name']}")
         st.caption(f"學號: {user['id']}")
         # 顯示訂閱狀態與 AI 額度
