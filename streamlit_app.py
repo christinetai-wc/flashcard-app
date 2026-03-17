@@ -347,6 +347,9 @@ def init_users_in_db():
     st.session_state.users_initialized = True
 
 # --- 3. Session State 初始化 ---
+# 每次 rerun 清除單次快取（確保不用過時資料）
+st.session_state.pop("_sentence_progress_cache", None)
+
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_info" not in st.session_state:
@@ -525,6 +528,11 @@ def load_user_sentence_progress(template_hash):
     return set(), 0
 
 def fetch_all_user_sentence_progress():
+    """讀取使用者的所有句型進度。同一次 rerun 只從 Firestore 讀一次"""
+    # 同一次 rerun 內快取
+    cache_key = "_sentence_progress_cache"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
     path = get_sentence_progress_path()
     if not db or not path: return {}
     docs = db.collection(path).stream()
@@ -535,6 +543,7 @@ def fetch_all_user_sentence_progress():
             "completed_options": data.get("completed_options", []),
             "completion_count": int(data.get("completion_count", 0)),
         }
+    st.session_state[cache_key] = result
     return result
 
 # --- 新增：更新使用者統計摘要 ---
