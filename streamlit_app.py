@@ -1297,13 +1297,15 @@ with st.sidebar:
     if not st.session_state.logged_in:
         st.subheader("🔑 學生登入")
 
-        # 清除舊格式 Cookie（明文密碼）
-        if cookie_controller.get("remembered_pwd"):
-            cookie_controller.remove("remembered_pwd")
-
         # 讀取 Cookie 自動登入（用 session token，不存密碼）
         remembered_user = cookie_controller.get("remembered_user")
         remembered_token = cookie_controller.get("session_token")
+
+        # 清除舊格式 Cookie（明文密碼），不影響 flow
+        try:
+            if cookie_controller.get("remembered_pwd"):
+                cookie_controller.remove("remembered_pwd")
+        except: pass
 
         if remembered_user and remembered_user in users_db and remembered_token and isinstance(remembered_token, str):
             # 從 Firestore 驗證 session token
