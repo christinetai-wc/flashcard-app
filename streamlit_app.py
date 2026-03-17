@@ -1273,9 +1273,12 @@ def attempt_login():
                 st.session_state.practice_seconds_today = existing_time
                 st.session_state.practice_seconds_last_saved = existing_time
                 st.session_state.practice_last_active = None
-                # 記住登入資訊到 Cookie (30 天有效)
+                # 產生 session token 存 Cookie（不存密碼）
+                import secrets as _secrets
+                session_token = _secrets.token_hex(32)
+                db.collection(USER_LIST_PATH).document(input_name).set({"session_token": session_token}, merge=True)
                 cookie_controller.set("remembered_user", input_name, max_age=30*24*60*60)
-                cookie_controller.set("remembered_pwd", input_password, max_age=30*24*60*60)
+                cookie_controller.set("session_token", session_token, max_age=30*24*60*60)
             else:
                 st.session_state.login_error = "密碼錯誤。"
         else:
@@ -1294,9 +1297,26 @@ with st.sidebar:
     if not st.session_state.logged_in:
         st.subheader("🔑 學生登入")
 
-        # 讀取 Cookie 預填登入資訊
+        # 讀取 Cookie 自動登入（用 session token，不存密碼）
         remembered_user = cookie_controller.get("remembered_user")
-        remembered_pwd = cookie_controller.get("remembered_pwd")
+        remembered_token = cookie_controller.get("session_token")
+
+        if remembered_user and remembered_user in users_db and remembered_token and isinstance(remembered_token, str):
+            # 從 Firestore 驗證 session token
+            try:
+                _user_doc = db.collection(USER_LIST_PATH).document(remembered_user).get()
+                if _user_doc.exists and _user_doc.to_dict().get("session_token") == remembered_token:
+                    st.session_state.logged_in = True
+                    st.session_state.current_user_name = remembered_user
+                    st.session_state.user_info = _user_doc.to_dict()
+                    sync_vocab_from_db(init_if_empty=False)
+                    existing_time = _user_doc.to_dict().get('practice_time', {}).get(str(date.today()), 0)
+                    st.session_state.practice_seconds_today = existing_time
+                    st.session_state.practice_seconds_last_saved = existing_time
+                    st.session_state.practice_last_active = None
+                    st.rerun()
+            except:
+                pass
 
         # 名稱選單：學生可選可搜尋，admin 預設隱藏（網址加 ?admin=1 可顯示）
         show_admin = st.query_params.get("admin") == "1"
@@ -1304,18 +1324,6 @@ with st.sidebar:
         default_idx = 0
         if remembered_user and remembered_user in user_names:
             default_idx = user_names.index(remembered_user) + 1
-        # admin Cookie 自動登入
-        if remembered_user and remembered_user in users_db and remembered_user not in user_names and remembered_pwd and isinstance(remembered_pwd, str):
-            if hash_password(remembered_pwd) == users_db[remembered_user].get("password"):
-                st.session_state.logged_in = True
-                st.session_state.current_user_name = remembered_user
-                st.session_state.user_info = users_db[remembered_user]
-                sync_vocab_from_db(init_if_empty=False)
-                existing_time = users_db[remembered_user].get('practice_time', {}).get(str(date.today()), 0)
-                st.session_state.practice_seconds_today = existing_time
-                st.session_state.practice_seconds_last_saved = existing_time
-                st.session_state.practice_last_active = None
-                st.rerun()
         st.selectbox(
             "選擇或搜尋名稱",
             options=[""] + user_names,
@@ -1327,7 +1335,6 @@ with st.sidebar:
         st.text_input(
             "輸入密碼",
             type="password",
-            value=remembered_pwd or "",
             key="login_password",
             on_change=attempt_login
         )
@@ -1358,8 +1365,11 @@ with st.sidebar:
                             sync_vocab_from_db(init_if_empty=False)
                             st.session_state.practice_seconds_today = 0
                             st.session_state.practice_last_active = None
+                            import secrets as _secrets
+                            session_token = _secrets.token_hex(32)
+                            db.collection(USER_LIST_PATH).document(reg_name).set({"session_token": session_token}, merge=True)
                             cookie_controller.set("remembered_user", reg_name, max_age=30*24*60*60)
-                            cookie_controller.set("remembered_pwd", reg_pwd, max_age=30*24*60*60)
+                            cookie_controller.set("session_token", session_token, max_age=30*24*60*60)
                             st.toast(f"✅ 歡迎 {reg_name}，享有 7 天免費 Premium 試用！")
                         st.rerun()
                     else:
@@ -1400,9 +1410,12 @@ with st.sidebar:
         menu =st.radio("功能選單", menu_options, key="nav_selection")
         if st.button("登出", use_container_width=True):
             save_practice_time()
-            # 清除記住的登入資訊 Cookie
+            # 清除 session token（Cookie + Firestore）
             cookie_controller.remove("remembered_user")
-            cookie_controller.remove("remembered_pwd")
+            cookie_controller.remove("session_token")
+            try:
+                db.collection(USER_LIST_PATH).document(st.session_state.current_user_name).update({"session_token": firestore.DELETE_FIELD})
+            except: pass
             st.session_state.logged_in = False
             st.session_state.user_info = None
             st.session_state.u_vocab = []

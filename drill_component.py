@@ -1,10 +1,21 @@
 """
 句型口說練習 JS 元件
-全程由 JS 控制：TTS → 錄音 → VAD 靜音偵測 → Gemini API → 回饋 → Firestore 寫入
+全程由 JS 控制：TTS → 錄音 → VAD 靜音偵測 → Cloud Function Proxy → 回饋 → Firestore 寫入
 """
 import json
+import hmac
+import hashlib
+import time
 import streamlit as st
 import google.auth.transport.requests
+
+
+def _generate_proxy_token():
+    """產生 HMAC token 供 Cloud Function 驗證（有效期 2 小時）"""
+    secret = st.secrets.get("PROXY_SECRET", "")
+    timestamp = str(int(time.time()))
+    signature = hmac.new(secret.encode(), timestamp.encode(), hashlib.sha256).hexdigest()
+    return f"{timestamp}.{signature}"
 
 
 def _get_firestore_token():
@@ -33,6 +44,7 @@ def generate_drill_html(template, options, completion_count, proxy_url,
     drill_remaining: 免費用戶今日剩餘 AI 判讀次數，-1 表示無限（Premium）
     """
     token, project_id = _get_firestore_token()
+    proxy_token = _generate_proxy_token()
 
     config = json.dumps({
         "template": template,
@@ -40,6 +52,7 @@ def generate_drill_html(template, options, completion_count, proxy_url,
         "completionCount": completion_count,
         "completedOptions": list(completed_options) if completed_options else [],
         "proxyUrl": proxy_url,
+        "proxyToken": proxy_token,
         "templateHash": template_hash,
         "datasetId": dataset_id,
         "silenceThreshold": 12,
@@ -479,7 +492,7 @@ Return JSON:
             method: 'POST',
             headers: {{
                 'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + CFG.firestoreToken,
+                'Authorization': 'Bearer ' + CFG.proxyToken,
             }},
             body: JSON.stringify({{
                 model: model,
