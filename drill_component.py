@@ -1062,6 +1062,11 @@ Return JSON:
         flushLog();
 
         if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+
+        // 顯示「再來一次」按鈕
+        $('start-btn').textContent = '🔄 再來一次';
+        $('start-btn').style.display = 'inline-block';
+        $('start-btn').disabled = false;
     }}
 
     function launchConfetti() {{
