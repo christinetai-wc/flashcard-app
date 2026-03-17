@@ -9,7 +9,7 @@ const ALLOWED_ORIGINS = [
   "https://flashcard-techeasy.streamlit.app",
 ];
 
-const MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];  // v2
+const MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
 
 /**
  * 驗證 HMAC token
@@ -56,10 +56,10 @@ exports.geminiProxy = onRequest(
       return;
     }
 
-    // 驗證 HMAC token（暫時降級為 log-only，不阻擋請求）
+    // 驗證 HMAC token
     const authHeader = req.headers.authorization || "";
-    if (!authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Missing auth token" });
+    if (!validateToken(authHeader, PROXY_SECRET.value())) {
+      res.status(401).json({ error: "Invalid or expired token" });
       return;
     }
 
