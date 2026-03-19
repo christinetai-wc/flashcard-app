@@ -39,6 +39,7 @@ artifacts/{APP_ID}/error_logs/{auto_id}                     # 錯誤紀錄
 | streamlit_app.py | 主程式（學生端） |
 | admin_app.py | 管理後台 |
 | drill_component.py | 句型口說 JS 元件 |
+| match_component.py | 例句連連看拖拉配對 JS 元件 |
 | student_report.py | 學生報告工具（CLI） |
 | functions/index.js | Cloud Function — Gemini API proxy |
 | firebase.json | Firebase 部署設定 |

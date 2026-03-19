@@ -1,5 +1,25 @@
 # Development Log
 
+## 2026-03-19 ~ 2026-03-20
+
+### 例句連連看拖拉配對
+- 新增 `match_component.py` — 自訂 JS 拖拉配對元件（取代 selectbox 下拉選單）
+- 支援桌面拖拉 + 手機觸控（拖曳影子 + drop zone 偵測）
+- 點已放的字可移除重放
+- 提交後 JS 直接用 Firestore REST API 更新 SRS（srs_due、interval、ease、streak）+ Correct/Total
+- 換題時排除上一輪出過的單字，改用隨機抽（不再優先低正確率）
+- 嘗試 streamlit-sortables 和 antd-components，都不適合配對場景，最終自寫 JS
+
+### 學生報告系統
+- 後台學生詳情改為只顯示報告（家長版 + 學生版 tab），移除產生按鈕
+- 報告由 Claude 手動撰寫存入 Firestore，不依賴 Gemini API
+- 新增所有有練習紀錄學生的學生版報告（Neo、語晰、Beef noodle master、翎晞）
+- 修正報告中「今天/明天」改為日期或「下次」
+
+### 文件更新
+- CLAUDE.md 全面更新（Cloud Function、報告系統、Cookie 安全、新功能）
+- DEVLOG.md 補齊 3/16~3/17 所有改動紀錄
+
 ## 2026-03-16 ~ 2026-03-17
 
 ### 資安修復：API Key 暴露事件
