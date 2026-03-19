@@ -14,6 +14,7 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 from streamlit.components.v1 import html
 from streamlit_cookies_controller import CookieController
+from streamlit_sortables import sort_items
 from drill_component import generate_drill_html
 
 # --- 新增：嘗試匯入 SpeechRecognition (保留供其他用途，但主功能改用 Gemini Audio) ---
@@ -2374,34 +2375,38 @@ else:
                     st.session_state.match_submitted = False
                     st.rerun()
 
-                # 顯示選項
-                st.info(f"**選項：** {' ・ '.join(st.session_state.match_options)}")
+                # 拖拉配對
+                if not st.session_state.get("match_submitted"):
+                    st.caption("把單字拖到對應的例句裡 👇")
 
-                # 顯示題目（使用 form 確保同時提交）
-                with st.form("match_form"):
-                    user_answers = []
+                    # 建立拖拉容器：每個例句一個容器 + 單字池
+                    containers = []
                     for i, q in enumerate(st.session_state.match_pool):
-                        col1, col2 = st.columns([3, 1])
-                        col1.markdown(f"**{i+1}.** {q['blanked']}")
-                        ans = col2.selectbox(
-                            f"選擇答案 {i+1}",
-                            ["請選擇..."] + st.session_state.match_options,
-                            key=f"match_ans_{i}",
-                            label_visibility="collapsed"
-                        )
-                        user_answers.append(ans)
+                        containers.append({
+                            "header": f"{i+1}. {q['blanked']}",
+                            "items": []
+                        })
+                    # 最後一個容器是單字池
+                    containers.append({
+                        "header": "📦 單字池（拖到上方例句）",
+                        "items": list(st.session_state.match_options)
+                    })
 
-                    if st.form_submit_button("✅ 提交答案", use_container_width=True):
-                        st.session_state.match_submitted = True
-                        st.session_state.match_user_answers = user_answers
+                    sorted_containers = sort_items(containers, multi_containers=True, direction="vertical")
+
+                    # 提交按鈕
+                    if st.button("✅ 提交答案", use_container_width=True, key="match_submit"):
+                        user_answers = []
+                        for i, q in enumerate(st.session_state.match_pool):
+                            items = sorted_containers[i]
+                            user_answers.append(items[0] if len(items) == 1 else "")
 
                         # 計算結果並更新資料庫
                         results = []
                         for i, q in enumerate(st.session_state.match_pool):
                             user_ans = user_answers[i]
-                            is_correct = user_ans.lower() == q['answer'].lower()
+                            is_correct = user_ans.lower() == q['answer'].lower() if user_ans else False
                             results.append(is_correct)
-                            # 更新單字的 Correct/Total
                             if q.get('id'):
                                 word_data = next((w for w in current_set if w.get('id') == q['id']), None)
                                 if word_data:
@@ -2411,6 +2416,8 @@ else:
                                         "Total": int(word_data.get('Total', 0)) + 1,
                                         **srs
                                     })
+                        st.session_state.match_submitted = True
+                        st.session_state.match_user_answers = user_answers
                         st.session_state.match_results = results
                         save_practice_time()
                         st.rerun()
@@ -2426,7 +2433,10 @@ else:
                             correct_count += 1
                             st.success(f"✅ {q['original']}")
                         else:
-                            st.error(f"❌ {q['blanked'].replace('______', f'**{user_ans}**')} → 正確：**{q['answer']}**")
+                            if user_ans:
+                                st.error(f"❌ {q['blanked'].replace('______', f'**{user_ans}**')} → 正確：**{q['answer']}**")
+                            else:
+                                st.error(f"❌ （未作答）→ 正確：**{q['answer']}**  {q['original']}")
 
                     if correct_count == 5:
                         st.balloons()

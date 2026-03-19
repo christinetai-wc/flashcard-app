@@ -5,3 +5,4 @@ requests
 google-cloud-firestore
 google-auth
 SpeechRecognition
+streamlit-sortables
