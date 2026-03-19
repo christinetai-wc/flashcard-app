@@ -16,6 +16,7 @@ from streamlit.components.v1 import html
 from streamlit_cookies_controller import CookieController
 from streamlit_sortables import sort_items
 from drill_component import generate_drill_html
+from match_component import generate_match_html
 
 # --- 新增：嘗試匯入 SpeechRecognition (保留供其他用途，但主功能改用 Gemini Audio) ---
 try:
@@ -2375,68 +2376,12 @@ else:
                     st.session_state.match_submitted = False
                     st.rerun()
 
-                # 顯示選項
-                st.info(f"**選項：** {' ・ '.join(st.session_state.match_options)}")
-
-                # 顯示題目
-                if not st.session_state.get("match_submitted"):
-                    with st.form("match_form"):
-                        user_answers = []
-                        for i, q in enumerate(st.session_state.match_pool):
-                            col1, col2 = st.columns([3, 1])
-                            col1.markdown(f"**{i+1}.** {q['blanked']}")
-                            ans = col2.selectbox(
-                                f"選擇答案 {i+1}",
-                                ["請選擇..."] + st.session_state.match_options,
-                                key=f"match_ans_{i}",
-                                label_visibility="collapsed"
-                            )
-                            user_answers.append(ans)
-
-                        if st.form_submit_button("✅ 提交答案", use_container_width=True):
-                            results = []
-                            for i, q in enumerate(st.session_state.match_pool):
-                                user_ans = user_answers[i]
-                                is_correct = user_ans.lower() == q['answer'].lower() if user_ans != "請選擇..." else False
-                                results.append(is_correct)
-                                if q.get('id'):
-                                    word_data = next((w for w in current_set if w.get('id') == q['id']), None)
-                                    if word_data:
-                                        srs = compute_srs_update(word_data, is_correct)
-                                        update_word_data(q['id'], {
-                                            "Correct": int(word_data.get('Correct', 0)) + (1 if is_correct else 0),
-                                            "Total": int(word_data.get('Total', 0)) + 1,
-                                            **srs
-                                        })
-                            st.session_state.match_submitted = True
-                            st.session_state.match_user_answers = user_answers
-                            st.session_state.match_results = results
-                            save_practice_time()
-                            st.rerun()
-
-                # 顯示結果
-                if st.session_state.get("match_submitted"):
-                    correct_count = 0
-                    st.divider()
-                    for i, q in enumerate(st.session_state.match_pool):
-                        user_ans = st.session_state.match_user_answers[i]
-                        is_correct = st.session_state.match_results[i]
-                        if is_correct:
-                            correct_count += 1
-                            st.success(f"✅ {q['original']}")
-                        else:
-                            if user_ans:
-                                st.error(f"❌ {q['blanked'].replace('______', f'**{user_ans}**')} → 正確：**{q['answer']}**")
-                            else:
-                                st.error(f"❌ （未作答）→ 正確：**{q['answer']}**  {q['original']}")
-
-                    if correct_count == 5:
-                        st.balloons()
-                        st.metric("得分", f"🎉 {correct_count} / 5 滿分！")
-                    elif correct_count >= 4:
-                        st.metric("得分", f"👏 {correct_count} / 5")
-                    else:
-                        st.metric("得分", f"{correct_count} / 5")
+                # 拖拉配對 JS 元件
+                match_html = generate_match_html(
+                    questions=st.session_state.match_pool,
+                    options=st.session_state.match_options,
+                )
+                html(match_html, height=450, scrolling=True)
 
     elif menu == "句型口說":
         track_practice_time()
