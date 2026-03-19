@@ -1,5 +1,61 @@
 # Development Log
 
+## 2026-03-16 ~ 2026-03-17
+
+### 資安修復：API Key 暴露事件
+- 舊 Gemini API key（...ViMmmw）被 Google 偵測為公開暴露並停用
+- 被盜用產生約 $35 USD 異常費用（合法用量僅 $0.19）
+- 新增 Firebase Cloud Function（`functions/index.js`）作為 Gemini API proxy
+- JS 端改呼叫 proxy URL，API key 只存在 Cloud Function 環境變數
+- HMAC token 驗證（PROXY_SECRET + timestamp，有效期 1 小時）
+- 關閉 Gemini 2.5 Flash thinking（`thinkingBudget: 0`），token 費用降低約 63%
+- Gemini API 設定 30 RPM 配額限制
+
+### 資安修復：Cookie 安全
+- Cookie 從存明文密碼改為存隨機 session token（64 hex）
+- 登入時產生 token 存入 Firestore + Cookie
+- 登出時清除 Firestore session_token + Cookie
+- 自動登入改用 session token 比對
+
+### 架構修復
+- JS ai_usage 改用 fieldTransforms.increment（原子操作），解決與 Python 端雙寫衝突
+- saveRoundToFirestore 改原子操作：completion_count 用 increment，rounds 改為 subcollection
+- updateSentenceStats completed 改用 increment，只在新句型（count=1）時 +1
+- 排行榜 completed 計數修正（從 sentence_progress 實際重算）
+- 排行榜刷新改用精確清除 `fetch_users_list.clear()`（不再 `st.cache_data.clear()`）
+- 單字 AI 額度改存 Firestore（ai_usage.vocab_count），重新整理不再重置
+- Drill 頁面合併重複 Firestore 讀取（get_drill_remaining + tts_rate 共用一次）
+- fetch_all_user_sentence_progress 同一次 rerun 只讀一次
+- 自動登入延遲 sync_vocab（避免浪費的 Firestore 讀取）
+- user_info 為 None 時自動登出（防止 NameError）
+- get_drill_remaining 從 Firestore 再確認 premium 狀態 + 安全網
+
+### 錯誤處理
+- 替換所有 `except: pass` 為 `log_error()`
+- 重要錯誤（Gemini API 失敗）寫入 Firestore error_logs
+- 一般錯誤 print 到 Streamlit Logs
+
+### 新功能
+- 句型口說新增語速調整按鈕（慢 0.5 / 中 0.85 / 快 1.0），存 Firestore 跨 session
+- 登入改用 selectbox 可選可搜尋，admin 隱藏（?admin=1 顯示）
+- 註冊成功自動登入 + toast 提示
+- 登入側邊欄新增鼓勵語（連續天數、練習時長、句型進度）
+- 排行榜 UTC 轉台灣時間、只顯示前 5 名、移除 👈 標記
+- 句型口說練完一輪顯示「🔄 再來一次」按鈕
+- 新增「首頁」顯示學生版每日報告
+- 後台學生詳情自動補正 practice_time（從 drill logs 計算）
+- 後台學生詳情顯示練習報告（家長版 + 學生版 tab）
+- 新增 student_report.py 學生報告工具（CLI + Gemini AI 分析）
+- VAD 防止 TTS 示範音誤判（清空 buffer + 連續幀判定 + 無語音不送 AI）
+
+### GAS LINE Bot 重構（expense_tracker）
+- Code.gs 精簡為路由，依「群組清單」備註欄分派（FlashCard/分帳/自學）
+- 新增 LineApi.gs / ExpenseTracker.gs / MedicineReminder.gs / FlashCard.gs / Save2GoogleDrive.gs
+- FlashCard.gs：家長群自動記錄 LINE User ID 到「FlashCard名單」sheet
+- 自動記錄所有群組 ID + 使用者 ID 到 sheet
+- 移除舊 Flask 版 Python 代碼
+- Save2GoogleDrive.gs 加入 YouTube 上傳功能（不公開，Brand Account 不支援 GAS，保留 Drive fallback）
+
 ## 2026-03-15
 
 ### 口說練習 UI 調整
