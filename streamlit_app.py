@@ -2375,32 +2375,36 @@ else:
                     st.session_state.match_submitted = False
                     st.rerun()
 
-                # 拖拉配對（左右分欄）
+                # 拖拉配對
                 if not st.session_state.get("match_submitted"):
-                    col_left, col_right = st.columns([3, 1])
+                    st.caption("把單字拖到對應的例句裡 👇")
 
-                    with col_left:
-                        st.caption("📝 例句")
-                        for i, q in enumerate(st.session_state.match_pool):
-                            st.markdown(f"**{i+1}.** {q['blanked']}")
+                    # 建立拖拉容器：每個例句一個容器 + 單字池
+                    containers = []
+                    for i, q in enumerate(st.session_state.match_pool):
+                        containers.append({
+                            "header": f"{i+1}. {q['blanked']}",
+                            "items": []
+                        })
+                    # 最後一個容器是單字池
+                    containers.append({
+                        "header": "📦 單字池（拖到上方例句）",
+                        "items": list(st.session_state.match_options)
+                    })
 
-                    with col_right:
-                        st.caption("拖拉排序配對 👇")
-                        sorted_words = sort_items(
-                            items=list(st.session_state.match_options),
-                            direction="vertical",
-                        )
-
-                    st.caption("把右邊的單字排成跟左邊例句對應的順序，第 1 個配第 1 題")
+                    sorted_containers = sort_items(containers, multi_containers=True, direction="vertical")
 
                     # 提交按鈕
                     if st.button("✅ 提交答案", use_container_width=True, key="match_submit"):
-                        user_answers = sorted_words[:5]  # 前 5 個配對，第 6 個是干擾項
+                        user_answers = []
+                        for i, q in enumerate(st.session_state.match_pool):
+                            items = sorted_containers[i]
+                            user_answers.append(items[0] if len(items) == 1 else "")
 
                         # 計算結果並更新資料庫
                         results = []
                         for i, q in enumerate(st.session_state.match_pool):
-                            user_ans = user_answers[i] if i < len(user_answers) else ""
+                            user_ans = user_answers[i]
                             is_correct = user_ans.lower() == q['answer'].lower() if user_ans else False
                             results.append(is_correct)
                             if q.get('id'):
