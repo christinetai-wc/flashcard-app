@@ -2346,8 +2346,12 @@ else:
             else:
                 # 初始化或換題
                 if "match_pool" not in st.session_state or st.button("🔄 換一批題目", key="match_refresh"):
-                    # 隨機抽 5 題（每次換題都不同）
-                    selected = random.sample(words_with_example, min(5, len(words_with_example)))
+                    # 排除上一輪的單字，隨機抽 5 題
+                    last_words = set(q['answer'] for q in st.session_state.get('match_pool', []))
+                    pool = [w for w in words_with_example if w['English'] not in last_words]
+                    if len(pool) < 5:
+                        pool = words_with_example  # 不夠就不排除
+                    selected = random.sample(pool, min(5, len(pool)))
 
                     # 產生干擾選項（從其他單字中隨機選一個）
                     other_words = [w for w in words_with_example if w not in selected]
