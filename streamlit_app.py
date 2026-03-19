@@ -2375,52 +2375,44 @@ else:
                     st.session_state.match_submitted = False
                     st.rerun()
 
-                # 拖拉配對
+                # 顯示選項
+                st.info(f"**選項：** {' ・ '.join(st.session_state.match_options)}")
+
+                # 顯示題目
                 if not st.session_state.get("match_submitted"):
-                    st.caption("把單字拖到對應的例句裡 👇")
-
-                    # 建立拖拉容器：每個例句一個容器 + 單字池
-                    containers = []
-                    for i, q in enumerate(st.session_state.match_pool):
-                        containers.append({
-                            "header": f"{i+1}. {q['blanked']}",
-                            "items": []
-                        })
-                    # 最後一個容器是單字池
-                    containers.append({
-                        "header": "📦 單字池（拖到上方例句）",
-                        "items": list(st.session_state.match_options)
-                    })
-
-                    sorted_containers = sort_items(containers, multi_containers=True, direction="vertical")
-
-                    # 提交按鈕
-                    if st.button("✅ 提交答案", use_container_width=True, key="match_submit"):
+                    with st.form("match_form"):
                         user_answers = []
                         for i, q in enumerate(st.session_state.match_pool):
-                            items = sorted_containers[i]
-                            user_answers.append(items[0] if len(items) == 1 else "")
+                            col1, col2 = st.columns([3, 1])
+                            col1.markdown(f"**{i+1}.** {q['blanked']}")
+                            ans = col2.selectbox(
+                                f"選擇答案 {i+1}",
+                                ["請選擇..."] + st.session_state.match_options,
+                                key=f"match_ans_{i}",
+                                label_visibility="collapsed"
+                            )
+                            user_answers.append(ans)
 
-                        # 計算結果並更新資料庫
-                        results = []
-                        for i, q in enumerate(st.session_state.match_pool):
-                            user_ans = user_answers[i]
-                            is_correct = user_ans.lower() == q['answer'].lower() if user_ans else False
-                            results.append(is_correct)
-                            if q.get('id'):
-                                word_data = next((w for w in current_set if w.get('id') == q['id']), None)
-                                if word_data:
-                                    srs = compute_srs_update(word_data, is_correct)
-                                    update_word_data(q['id'], {
-                                        "Correct": int(word_data.get('Correct', 0)) + (1 if is_correct else 0),
-                                        "Total": int(word_data.get('Total', 0)) + 1,
-                                        **srs
-                                    })
-                        st.session_state.match_submitted = True
-                        st.session_state.match_user_answers = user_answers
-                        st.session_state.match_results = results
-                        save_practice_time()
-                        st.rerun()
+                        if st.form_submit_button("✅ 提交答案", use_container_width=True):
+                            results = []
+                            for i, q in enumerate(st.session_state.match_pool):
+                                user_ans = user_answers[i]
+                                is_correct = user_ans.lower() == q['answer'].lower() if user_ans != "請選擇..." else False
+                                results.append(is_correct)
+                                if q.get('id'):
+                                    word_data = next((w for w in current_set if w.get('id') == q['id']), None)
+                                    if word_data:
+                                        srs = compute_srs_update(word_data, is_correct)
+                                        update_word_data(q['id'], {
+                                            "Correct": int(word_data.get('Correct', 0)) + (1 if is_correct else 0),
+                                            "Total": int(word_data.get('Total', 0)) + 1,
+                                            **srs
+                                        })
+                            st.session_state.match_submitted = True
+                            st.session_state.match_user_answers = user_answers
+                            st.session_state.match_results = results
+                            save_practice_time()
+                            st.rerun()
 
                 # 顯示結果
                 if st.session_state.get("match_submitted"):
