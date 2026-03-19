@@ -2384,6 +2384,7 @@ else:
                 match_html = generate_match_html(
                     questions=st.session_state.match_pool,
                     options=st.session_state.match_options,
+                    vocab_path=get_vocab_path() or "",
                 )
                 html(match_html, height=450, scrolling=True)
 
