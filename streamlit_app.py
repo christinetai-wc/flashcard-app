@@ -2346,8 +2346,8 @@ else:
             else:
                 # 初始化或換題
                 if "match_pool" not in st.session_state or st.button("🔄 換一批題目", key="match_refresh"):
-                    # 按正確率由低到高抽題（正確率低的優先）
-                    selected = sample_by_accuracy(words_with_example, 5)
+                    # 隨機抽 5 題（每次換題都不同）
+                    selected = random.sample(words_with_example, min(5, len(words_with_example)))
 
                     # 產生干擾選項（從其他單字中隨機選一個）
                     other_words = [w for w in words_with_example if w not in selected]
