@@ -452,7 +452,7 @@ body.dark .speed-btn.active {{ background:rgba(80,160,255,0.2); color:#7db8ff; b
     }}
 
     // === AI 判讀（透過 Cloud Function proxy，多模型降級 + 語音辨識 fallback） ===
-    const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+    const MODELS = ['gemini-2.5-flash'];
     let modelIdx = 0; // 目前使用的模型索引，429 時往下降級
 
     function blobToBase64(blob) {{
@@ -671,13 +671,13 @@ Return JSON:
         const commitUrl = `https://firestore.googleapis.com/v1/projects/${{projectId}}/databases/(default)/documents:commit`;
         const transforms = [
             {{
-                fieldPath: `ai_usage.drill_count.${{today}}`,
+                fieldPath: `ai_usage.drill_count.\`${{today}}\``,
                 increment: {{ integerValue: '1' }}
             }}
         ];
         if (tokenCount > 0) {{
             transforms.push({{
-                fieldPath: `ai_usage.speech.${{today}}`,
+                fieldPath: `ai_usage.speech.\`${{today}}\``,
                 increment: {{ integerValue: String(tokenCount) }}
             }});
         }}
@@ -727,7 +727,7 @@ Return JSON:
                         transform: {{
                             document: `projects/${{projectId}}/databases/(default)/documents/${{docPath}}`,
                             fieldTransforms: [{{
-                                fieldPath: `practice_time.${{today}}`,
+                                fieldPath: `practice_time.\`${{today}}\``,
                                 increment: {{ integerValue: String(Math.round(seconds)) }}
                             }}]
                         }}

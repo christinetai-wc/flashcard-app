@@ -4,12 +4,47 @@ const crypto = require("crypto");
 
 const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 const PROXY_SECRET = defineSecret("PROXY_SECRET");
+const LINE_CHANNEL_ACCESS_TOKEN = defineSecret("LINE_CHANNEL_ACCESS_TOKEN");
+const LINE_TEACHER_USER_ID = defineSecret("LINE_TEACHER_USER_ID");
+
+// LINE 通知冷卻：同一個錯誤類型 10 分鐘內只發一次
+let _lastNotifyTime = 0;
+const NOTIFY_COOLDOWN_MS = 10 * 60 * 1000;
+
+async function notifyLineIfNeeded(model, statusCode, detail) {
+  const now = Date.now();
+  if (now - _lastNotifyTime < NOTIFY_COOLDOWN_MS) return;
+
+  const token = LINE_CHANNEL_ACCESS_TOKEN.value();
+  const userId = LINE_TEACHER_USER_ID.value();
+  if (!token || !userId) return;
+
+  _lastNotifyTime = now;
+  const time = new Date(now + 8 * 3600 * 1000).toISOString().slice(11, 16);
+  const msg = `⚠️ Gemini API 異常\n模型：${model}\n狀態：${statusCode}\n${detail}\n時間：${time}`;
+
+  try {
+    await fetch("https://api.line.me/v2/bot/message/push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        to: userId,
+        messages: [{ type: "text", text: msg }],
+      }),
+    });
+  } catch (e) {
+    console.error("LINE notify failed:", e.message);
+  }
+}
 
 const ALLOWED_ORIGINS = [
   "https://flashcard-techeasy.streamlit.app",
 ];
 
-const MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
+const MODELS = ["gemini-2.5-flash"];
 
 /**
  * 驗證 HMAC token
@@ -44,7 +79,7 @@ function validateToken(authHeader, secret) {
 exports.geminiProxy = onRequest(
   {
     cors: ALLOWED_ORIGINS,
-    secrets: [GEMINI_API_KEY, PROXY_SECRET],
+    secrets: [GEMINI_API_KEY, PROXY_SECRET, LINE_CHANNEL_ACCESS_TOKEN, LINE_TEACHER_USER_ID],
     invoker: "public",
     maxInstances: 10,
     timeoutSeconds: 60,
@@ -94,9 +129,17 @@ exports.geminiProxy = onRequest(
 
       const status = response.status;
       const data = await response.json();
+
+      // API key 失效、額度用完、權限錯誤 → LINE 通知
+      if (status === 401 || status === 403 || status === 429) {
+        const errMsg = data?.error?.message || `HTTP ${status}`;
+        notifyLineIfNeeded(targetModel, status, errMsg);
+      }
+
       res.status(status).json(data);
     } catch (error) {
       console.error("Gemini proxy error:", error);
+      notifyLineIfNeeded(targetModel, 500, error.message);
       res.status(500).json({ error: "Internal error" });
     }
   }
