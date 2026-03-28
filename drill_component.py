@@ -547,7 +547,7 @@ Return JSON:
                     const tc = result._tokenCount || 0;
                     delete result._tokenCount;
                     S.drillUsed++;
-                    recordUsageToFirestore(tc);
+                    await recordUsageToFirestore(tc);
                     return result;
                 }}
             }} catch(e) {{
@@ -682,7 +682,7 @@ Return JSON:
             }});
         }}
         try {{
-            await fetch(commitUrl, {{
+            const res = await fetch(commitUrl, {{
                 method: 'POST',
                 headers: {{
                     'Authorization': 'Bearer ' + CFG.firestoreToken,
@@ -697,7 +697,15 @@ Return JSON:
                     }}]
                 }})
             }});
-        }} catch(e) {{ console.warn('Usage record error:', e); }}
+            if (!res.ok) {{
+                const errText = await res.text().catch(() => '');
+                console.error('[ai_usage] write failed:', res.status, errText);
+                logEvent('ai_usage_error', `${{res.status}} ${{errText.slice(0, 100)}}`);
+            }}
+        }} catch(e) {{
+            console.warn('Usage record error:', e);
+            logEvent('ai_usage_error', e.message || 'fetch_error');
+        }}
     }}
 
     // 練習時間寫入 Firestore（使用 fieldTransforms.increment，原子操作）
