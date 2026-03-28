@@ -1,16 +1,24 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## 專案概述
 Flashcard Pro 雲端版 — 台灣國中小英語學習平台（Streamlit + Firestore + Cloud Function + Gemini AI）
 
 ## 開發指令
 ```bash
+# 安裝依賴
+pip install -r requirements.txt
+cd functions && npm install && cd ..
+
 # 學生端
 streamlit run streamlit_app.py
 # 管理後台
 streamlit run admin_app.py
 # 學生報告（CLI）
 python student_report.py <學生名稱> [--ai]
+# 檢查學生練習狀況（當使用者說「檢查學生狀況」時執行）
+python check_activity.py
 # Cloud Function 部署
 firebase deploy --only functions --project flashcard-app-9dd69 --force
 ```
@@ -41,6 +49,7 @@ artifacts/{APP_ID}/error_logs/{auto_id}                     # 錯誤紀錄
 | drill_component.py | 句型口說 JS 元件 |
 | match_component.py | 例句連連看拖拉配對 JS 元件 |
 | student_report.py | 學生報告工具（CLI） |
+| check_activity.py | 學生練習狀況檢查（口說紀錄 + 異狀偵測） |
 | functions/index.js | Cloud Function — Gemini API proxy |
 | firebase.json | Firebase 部署設定 |
 | .firebaserc | Firebase 專案綁定（flashcard-app-9dd69） |
@@ -52,17 +61,11 @@ artifacts/{APP_ID}/error_logs/{auto_id}                     # 錯誤紀錄
 - **防護**：CORS 限制 + HMAC 驗證 + Gemini API 30 RPM 配額
 - **Thinking**：已關閉（`thinkingBudget: 0`），大幅降低 token 費用
 - **降級**：gemini-2.5-flash → gemini-2.0-flash → 瀏覽器語音辨識
+- **LINE 即時通知**：API 回傳 401/403/429 或例外時，自動 LINE 推播通知老師（10 分鐘冷卻防洗版）
+- **Secrets**：`LINE_CHANNEL_ACCESS_TOKEN`、`LINE_TEACHER_USER_ID` 同步設定在 Firebase Secret Manager
 
-## streamlit_app.py 模組結構
-| 區段 | 行號（約略） | 內容 |
-|------|-------------|------|
-| 設定與常數 | 1-80 | import、API 常數、Firestore、Cookie、免費方案限制 |
-| 工具函式 | 80-180 | hash、is_premium、check_vocab_ai_usage、log_error、register_new_user |
-| 資料庫 CRUD | 180-650 | 單字/句型/進度/公用單字集的讀寫函式 |
-| AI 函式 | 650-1000 | call_gemini_to_complete、call_gemini_ocr、check_audio_batch、TTS、鍵盤橋接 |
-| SRS 核心 | 1000-1120 | compute_srs_update、get_due_words、sample_for_review、練習時間追蹤 |
-| 鼓勵語 | 1200-1250 | _generate_encouragement（根據練習數據，不呼叫 AI） |
-| 登入與 UI | 1280+ | 側邊欄、首頁（報告）、儀表板、單字管理、單字練習、句型口說、後台管理 |
+## streamlit_app.py 模組結構（~2500 行，由上而下）
+設定與常數 → 工具函式（hash、is_premium、log_error、register） → Session State 初始化 → 資料庫 CRUD → AI 函式（Gemini、OCR、TTS） → SRS 核心（compute_srs_update、get_due_words、sample_for_review） → UI 工具 → 鼓勵語 → 登入與 UI 頁面
 
 ## 功能選單結構
 首頁（學生版報告）→ 學習儀表板 → 單字管理 → 單字練習 → 句型口說 → ⚙️ 後台管理（admin only）
@@ -95,15 +98,23 @@ artifacts/{APP_ID}/error_logs/{auto_id}                     # 錯誤紀錄
 - **原子操作**：completion_count 用 increment，rounds 寫入獨立 subcollection，ai_usage 用 increment
 - **逐題存入**：每個 option 通過後即時寫入 `completed_options`，中途離開不丟進度
 - **排行榜更新**：sentence_stats.completed 用 increment，只在 completion_count 從 0→1 時 +1
+- **麥克風錯誤**：顯示黃色提示框，列出 iPhone/Android/電腦的麥克風權限開啟步驟
 - **完成後**：顯示「🔄 再來一次」按鈕
 - **Token**：HMAC token（有效期 1 小時，與 Firestore token 同步）
+
+## 例句連連看元件（match_component.py）
+- **架構**：自包含 JS 元件，透過 `st.components.v1.html()` 嵌入 iframe
+- **流程**：例句挖空配對，拖拉單字卡到空格 → 提交 → JS 端計算 SRS → REST API 寫入 Firestore
+- **Firestore 寫入**：JS 直接用 REST API（Python 產生短期 access token）
+- **換題邏輯**：排除上一輪出過的單字，隨機抽取
 
 ## 練習報告系統
 - **家長版**（每週）：7 個區塊（統計 → 苦戰單字 → 發音弱點 → 強項 → 進步觀察 → 建議 → 總評）
 - **學生版**（每天）：三明治溝通法（🌟 讚美 → 💡 小提醒 → 🔥 鼓勵），150-250 字
 - **存放**：`reports/{date}` 文件，`content`（家長版）+ `student_content`（學生版）
 - **顯示**：首頁顯示學生版，後台顯示兩版（tab 切換）
-- **產生**：由 Claude 手動撰寫存入 Firestore，觸發詞「幫 XX 產家長版/學生版報告」
+- **產生**：由 Claude 撰寫存入 Firestore，觸發詞「產生學生報告」（批次）或「幫 XX 產學生版/家長版報告」（個別）
+- **資料來源**：從 drill_logs events 撈取 attempt/feedback 資料（用 check_activity.py 同一套邏輯）
 - **風格**：不用「今天」「明天」，用日期或「下次」；學生版不用音標，用類比法
 
 ## UI/UX
@@ -117,6 +128,11 @@ artifacts/{APP_ID}/error_logs/{auto_id}                     # 錯誤紀錄
 ## 後台（admin_app.py）
 - **學生詳情**：自動補正 practice_time（從 drill logs 計算）
 - **練習報告**：家長版 / 學生版 tab 顯示
+
+## check_activity.py（學生狀況檢查）
+- 顯示每位學生今日/最近口說紀錄、句型進度
+- 偵測近 7 天異狀：API 額度用完（`gemini_quota`）、API 錯誤（`gemini_error`）、降級語音辨識（`sr_fallback`）、麥克風錯誤（`mic_error`）、空白錄音（`audio_empty`）
+- drill_logs doc ID 是毫秒 timestamp，學生 ID 存在 `public/data/users` 的 `id` 欄位（如 S001、S006）
 
 ## Gotchas
 - 新用戶 `sync_vocab_from_db(init_if_empty=False)` — 不自動建立預設單字

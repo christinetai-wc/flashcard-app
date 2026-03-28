@@ -991,7 +991,25 @@ Return JSON:
         }} catch (e) {{
             logEvent('mic_error', e.message || e.name || 'unknown');
             flushLog();
-            setStatus('❌ 無法存取麥克風，請允許麥克風權限後重新整理頁面');
+            setStatus('❌ 無法存取麥克風');
+            const helpDiv = document.createElement('div');
+            helpDiv.style.cssText = 'background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 16px;margin:12px auto;max-width:360px;text-align:left;font-size:14px;line-height:1.8;color:#333';
+            helpDiv.innerHTML = `
+                <b>📋 請依照以下步驟開啟麥克風：</b><br>
+                <b>iPhone / iPad：</b><br>
+                1. 點網址列左邊的「大小」按鈕<br>
+                2. 找到「麥克風」→ 選「允許」<br>
+                3. 重新整理頁面<br><br>
+                <b>Android Chrome：</b><br>
+                1. 點網址列左邊的 🔒 圖示<br>
+                2.「麥克風」→ 開啟<br>
+                3. 重新整理頁面<br><br>
+                <b>電腦 Chrome：</b><br>
+                1. 點網址列左邊的 🔒 圖示<br>
+                2.「麥克風」→ 允許<br>
+                3. 重新整理頁面
+            `;
+            $('drill-status').parentNode.insertBefore(helpDiv, $('drill-status').nextSibling);
             $('start-btn').disabled = false;
             $('start-btn').style.display = 'inline-block';
             return;

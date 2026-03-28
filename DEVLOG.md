@@ -1,5 +1,36 @@
 # Development Log
 
+## 2026-03-26
+
+### 句型口說麥克風錯誤提示改善
+- 麥克風權限被拒時，顯示黃色提示框列出 iPhone/Android/電腦三種裝置的操作步驟
+- 原本只顯示一行錯誤訊息，學生不知道怎麼修
+
+## 2026-03-25
+
+### Cloud Function 加 LINE 即時通知
+- Gemini API 異常（401/403/429 或例外）時自動 LINE 推播通知老師
+- 10 分鐘冷卻機制，避免同一問題連續洗版
+- LINE secrets（`LINE_CHANNEL_ACCESS_TOKEN`、`LINE_TEACHER_USER_ID`）加入 Firebase Secret Manager
+
+### Gemini API Key 更新
+- 舊 key 過期（API key expired），第二把 key 超過 spending cap
+- 更新第三把 key 到 secrets.toml 和 Firebase Functions secrets
+- 重新部署 Cloud Function
+
+### 新增 check_activity.py — 學生練習狀況檢查工具
+- 顯示每位學生今日/最近口說紀錄、句型進度
+- 偵測近 7 天異狀：API 額度用完、API 錯誤、麥克風錯誤、空白錄音、降級語音辨識
+- 發現 Leticia 麥克風完全無法使用（46 次錯誤）、Vanessasu88 全程語音辨識模式（API 額度用完 14 次）
+
+### 學生版報告
+- 產生語晰、Vanessasu88 的 3/25 學生版報告並存入 Firestore
+
+### OpenAI 遷移計畫（暫緩）
+- 評估從 Gemini 遷移到 OpenAI API（可設月度消費硬上限）
+- OpenAI gpt-4o-mini-audio-preview 支援音檔直接輸入（含 webm），不需轉格式
+- 計畫存於 `.claude/plans/compiled-honking-music.md`，等低峰期執行
+
 ## 2026-03-19 ~ 2026-03-20
 
 ### 例句連連看拖拉配對
